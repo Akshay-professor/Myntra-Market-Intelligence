@@ -10,7 +10,22 @@ An end-to-end retail analytics platform that combines traditional BI reporting w
 
 ---
 
-![Myntra Market Intelligence Dashboard](https://github.com/user-attachments/assets/9a06e8b4-b8b0-4217-ac6e-5cf791da35d6)
+## 📸 Live Demo Screenshots
+
+### Visual Dashboard & Data Insights
+The app automatically generates interactive charts for brand performance, category pricing, rating analysis, and discount strategy.
+
+![Visual Dashboard](./Myntra_Project_Screenshots/POWERBI%20DASHBOARD.png)
+
+### Visual Insights
+Detailed breakdown of key metrics and analytics across the dataset.
+
+![Visual Insights](./Myntra_Project_Screenshots/Visual%20Insight.png)
+
+### Conversational AI Chat Interface
+Ask natural language questions and get instant, detailed insights powered by Groq's LLM and LangChain reasoning.
+
+![Agentic Chat](./Myntra_Project_Screenshots/Agentic%20Chat.png)
 
 ---
 
