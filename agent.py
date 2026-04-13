@@ -14,62 +14,8 @@ FALLBACK_MODELS = [
 ]
 
 
-DOMAIN_KEYWORDS = {
-    "myntra",
-    "product",
-    "products",
-    "brand",
-    "brands",
-    "category",
-    "categories",
-    "discount",
-    "discounted",
-    "price",
-    "pricing",
-    "rating",
-    "ratings",
-    "review",
-    "reviews",
-    "revenue",
-    "catalog",
-    "apparel",
-    "women",
-    "men",
-    "kids",
-}
-
-
-def is_query_in_scope(df, user_query: str) -> bool:
-    """Returns True if query appears related to Myntra dataset analytics."""
-    q = (user_query or "").strip().lower()
-    if not q:
-        return False
-
-    if any(word in q for word in DOMAIN_KEYWORDS):
-        return True
-
-    # Dynamic signal: match known brands/categories from the loaded dataset.
-    try:
-        brands = set(df["brand"].dropna().astype(str).str.lower().unique())
-        categories = set(df["category"].dropna().astype(str).str.lower().unique())
-        if any(b in q for b in brands) or any(c in q for c in categories):
-            return True
-    except Exception:
-        # If schema is unexpected, don't block agent calls here.
-        return True
-
-    return False
-
-
 def get_agent_response(df, user_query: str) -> str:
     """Runs a LangChain ReAct agent over Myntra dataframe tools and returns a user-friendly answer."""
-    if not is_query_in_scope(df, user_query):
-        return (
-            "I can only answer Myntra dataset questions (brands, categories, discounts, "
-            "prices, ratings, and reviews). Please ask a data question like: "
-            "'Top 5 brands by average discount' or 'Show products above 60% discount'."
-        )
-
     if not os.getenv("GROQ_API_KEY"):
         return "Error: GROQ_API_KEY is not set. Please add it to your .env file."
 
@@ -138,8 +84,6 @@ def get_agent_response(df, user_query: str) -> str:
     template = """You are a Myntra Business Analyst AI.
 Answer clearly using only the data returned by tools.
 If tool outputs are unavailable, explain what went wrong in a friendly way.
-If the question is not related to Myntra dataset analytics, directly respond with a short
-out-of-scope message and do not attempt any tool call.
 
 You have access to the following tools:
 {tools}
@@ -172,16 +116,7 @@ Thought:{agent_scratchpad}"""
             max_execution_time=30,
         )
         result = executor.invoke({"input": user_query})
-        output = result.get("output", "I could not generate an answer based on the data.")
-
-        # Convert generic executor stopping text into a useful UX message.
-        if "agent stopped due to iteration limit or time limit" in str(output).lower():
-            return (
-                "I could not finish that query in time. Please ask a more specific Myntra data "
-                "question (for example: 'Top brands by discount' or 'Category-wise average price')."
-            )
-
-        return output
+        return result.get("output", "I could not generate an answer based on the data.")
 
     try:
         return run_with_model(preferred_model)
