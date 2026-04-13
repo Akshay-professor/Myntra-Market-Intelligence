@@ -5,7 +5,7 @@
 An end-to-end retail analytics platform that combines traditional BI reporting with a conversational AI agent — allowing category managers to extract business insights from Myntra product data through natural language queries.
 
 **Built by:** Akshay Kumar — Data Analyst | AI & Automation  
-**Live Demo:** *(Deploy link here after Streamlit Cloud deployment)*  
+**Live Demo:** https://myntra-market-intelligence.streamlit.app/  
 **GitHub:** [Akshay-professor](https://github.com/Akshay-professor) · **LinkedIn:** [akshay-poddar](https://www.linkedin.com/in/akshay-poddar-4299a5243/)
 
 ---
