@@ -169,56 +169,83 @@ _GREETING_RESPONSE = (
     "What would you like to explore?"
 )
 
-_PRODUCT_KEYWORDS = [
-    "show me", "find me", "i want", "i need", "search for", "looking for",
-    "buy", "purchase", "suggest", "recommend", "get me",
+_ANALYTICAL_KEYWORDS = [
+    "top brands", "brand performance", "average", "summary", "compare",
+    "distribution", "category", "rating", "discount strategy", "most reviewed",
+    "highest", "lowest", "how many", "total", "count", "percentage",
+    "analytics", "analysis", "insight", "trend", "overall",
 ]
 
+def _is_analytical_query(text: str) -> bool:
+    """Check if query needs LLM-powered analytics."""
+    q = text.lower()
+    return any(kw in q for kw in _ANALYTICAL_KEYWORDS)
+
+
 def _try_direct_product_search(query: str, dataframe) -> str | None:
-    """Attempt to answer simple product queries directly without the LLM.
-    Returns a formatted response string, or None if the query is too complex.
+    """Attempt to answer product queries directly without the LLM.
+    Returns a formatted response string, or None if the query needs the LLM.
     """
-    import data_tools
-    
-    q = query.lower().strip()
-    
-    # Check if this looks like a product search query
-    is_product_query = any(kw in q for kw in _PRODUCT_KEYWORDS)
-    if not is_product_query:
-        return None
-    
-    # Try to extract a max price
     import re
-    price_match = re.search(r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q)
+    import data_tools
+
+    q = query.lower().strip()
+
+    # Skip analytical queries — those need the LLM
+    if _is_analytical_query(q):
+        return None
+
+    # Try to extract a max price
+    price_match = re.search(
+        r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
+    )
     max_price = float(price_match.group(1)) if price_match else None
-    
-    # Extract the product keyword by stripping common filler words
+
+    # Filler phrases to strip (multi-word first, then single words)
+    filler_phrases = [
+        "show me", "find me", "i want to buy", "i want to purchase",
+        "i want", "i need", "search for", "looking for", "get me",
+        "up to", "less than",
+    ]
+    filler_words = [
+        "show", "find", "buy", "purchase", "suggest", "recommend",
+        "under", "below", "within", "budget", "max", "upto",
+        "please", "pls", "plz", "some", "any",
+        "rs", "₹", "inr", "rupees", "rupee",
+    ]
+
     search_term = q
-    for filler in _PRODUCT_KEYWORDS + ["under", "below", "within", "budget", "max", "upto", "up to", 
-                                         "less than", "of", "a", "an", "the", "me", "some", "any",
-                                         "rs", "₹", "inr", "rupees", "rupee", "please", "pls", "plz"]:
+    # Strip multi-word fillers first (order matters)
+    for filler in filler_phrases:
         search_term = search_term.replace(filler, " ")
+    # Strip single filler words using word boundaries (so "a" doesn't break "jeans")
+    for word in filler_words:
+        search_term = re.sub(r'\b' + re.escape(word) + r'\b', ' ', search_term)
     # Remove price numbers
     search_term = re.sub(r'\d+', '', search_term).strip()
     # Clean up extra spaces
     search_term = re.sub(r'\s+', ' ', search_term).strip()
-    
+
     if not search_term or len(search_term) < 2:
         return None
-    
+
     # Build the search input
     search_input = f"{search_term}|{int(max_price)}" if max_price else search_term
     result = data_tools.search_products(dataframe, search_input)
-    
+
     if "No products found" in result:
-        return f"Sorry, I couldn't find any **{search_term}** products" + (f" under ₹{int(max_price)}" if max_price else "") + " in the catalog. Try a different keyword!"
-    
+        return (
+            f"Sorry, I couldn't find any **{search_term}** products"
+            + (f" under ₹{int(max_price)}" if max_price else "")
+            + " in the catalog. Try a different keyword!"
+        )
+
     # Format nicely
     header = f"Here are the top results for **{search_term}**"
     if max_price:
         header += f" under **₹{int(max_price)}**"
     header += ":\n\n"
-    
+
     return header + result
 
 
@@ -240,19 +267,19 @@ def build_chat_context(messages: list, current_query: str) -> str:
 
 
 def get_smart_response(query: str, dataframe, messages: list) -> str:
-    """Smart router: handles greetings and simple product searches locally,
+    """Smart router: handles greetings and product searches locally,
     only calls the LLM for complex analytical queries. Saves tokens.
     """
     # 1. Handle greetings without calling the LLM
     if _is_greeting(query):
         return _GREETING_RESPONSE
-    
-    # 2. Try direct product search (no LLM needed)
+
+    # 2. Try direct product search (no LLM needed for shopping queries)
     direct_result = _try_direct_product_search(query, dataframe)
     if direct_result is not None:
         return direct_result
-    
-    # 3. Complex query → use the LLM agent
+
+    # 3. Analytical or complex query → use the LLM agent
     full_prompt = build_chat_context(messages, query)
     return get_agent_response(dataframe, full_prompt)
 
