@@ -31,3 +31,4 @@ Thumbs.db
 # Data files
 *.csv
 *.zip
+!cleaned_myntra_data.csv
