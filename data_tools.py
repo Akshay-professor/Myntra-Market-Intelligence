@@ -75,15 +75,62 @@ def get_brand_performance(df: pd.DataFrame) -> str:
     return res.head(20).reset_index().to_markdown(index=False)
 
 
+# ---------------------------------------------------------------------------
+# Advanced product search — used by both LLM agent and direct search
+# ---------------------------------------------------------------------------
+
+def find_products(df: pd.DataFrame, keywords: list[str],
+                  min_price: float | None = None,
+                  max_price: float | None = None,
+                  limit: int = 10) -> pd.DataFrame:
+    """Search products by matching keywords against product_name, brand, and category.
+
+    Each keyword is matched independently (OR logic across columns, AND across keywords
+    would be too restrictive, so we use OR across all keywords too — the more keywords
+    match, the more likely it appears at the top via review-count sorting).
+
+    Returns a DataFrame of matching products, sorted by num_reviews descending.
+    """
+    if not keywords:
+        return pd.DataFrame()
+
+    # Build a combined mask: product matches if ANY keyword hits ANY searchable column
+    mask = pd.Series(False, index=df.index)
+    for kw in keywords:
+        kw = kw.lower().strip()
+        if len(kw) < 2:
+            continue
+        name_hit = df["product_name"].str.lower().str.contains(kw, na=False, regex=False)
+        brand_hit = df["brand"].str.lower().str.contains(kw, na=False, regex=False)
+        category_hit = df["category"].str.lower().str.contains(kw, na=False, regex=False)
+        mask = mask | name_hit | brand_hit | category_hit
+
+    results = df[mask]
+
+    # Apply price filters
+    if min_price is not None:
+        results = results[results["discounted_price"] >= min_price]
+    if max_price is not None:
+        results = results[results["discounted_price"] <= max_price]
+
+    # Sort by popularity (num_reviews) then rating
+    if "num_reviews" in results.columns:
+        results = results.sort_values(
+            by=["num_reviews", "rating"], ascending=[False, False]
+        )
+
+    return results.head(limit)
+
+
 def search_products(df: pd.DataFrame, query_input: str) -> str:
-    """Returns products matching the search query and optional max price.
-    Format of query_input: 'keyword' OR 'keyword|max_price'
+    """LLM-agent-compatible search: takes a string, returns markdown table.
+    Format: 'keyword' OR 'keyword|max_price'
     """
     if not query_input or not isinstance(query_input, str) or query_input.strip() == "":
         return "Please provide a valid search keyword."
 
     parts = [p.strip() for p in query_input.split("|")]
-    query = parts[0].lower()
+    keywords = parts[0].split()
     max_price = None
     if len(parts) > 1:
         try:
@@ -91,22 +138,16 @@ def search_products(df: pd.DataFrame, query_input: str) -> str:
         except ValueError:
             pass
 
-    mask = df["product_name"].str.lower().str.contains(query, na=False)
-    res = df[mask]
+    results = find_products(df, keywords, max_price=max_price)
 
-    if max_price is not None:
-        res = res[res["discounted_price"] <= max_price]
-        if res.empty:
-            return f"No products found matching '{query}' under ₹{max_price}."
-
-    if res.empty:
-        return f"No products found matching '{query}'."
+    if results.empty:
+        msg = f"No products found matching '{parts[0]}'"
+        if max_price:
+            msg += f" under ₹{max_price}"
+        return msg + "."
 
     cols = ["product_name", "brand", "discounted_price", "discount_pct", "rating"]
     if "image_url" in df.columns: cols.append("image_url")
     if "product_url" in df.columns: cols.append("product_url")
 
-    if "num_reviews" in df.columns:
-        res = res.sort_values(by="num_reviews", ascending=False)
-
-    return res[cols].head(10).to_markdown(index=False)
+    return results[cols].to_markdown(index=False)
