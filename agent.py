@@ -85,7 +85,7 @@ def get_agent_response(df, user_query: str) -> str:
                 lambda x: data_tools.search_products(df, x),
                 "Tool failed while searching products",
             ),
-            description="Searches for products by a specific keyword (e.g., 'polo green', 'nike shoes'). Input must be a single search string.",
+            description="Searches for products by keyword and optional maximum price. Input format: 'keyword' OR 'keyword|max_price'. Example: 'polo green' or 'jeans|2000'.",
         ),
     ]
 
@@ -138,8 +138,10 @@ Thought:{agent_scratchpad}"""
     try:
         return run_with_model(preferred_model)
     except Exception as e:
-        primary_err = str(e)
-        if "decommissioned" in primary_err.lower() or "model_decommissioned" in primary_err.lower():
+        primary_err = str(e).lower()
+        
+        # Try fallback models for rate limits or decommissioned models
+        if "rate_limit" in primary_err or "429" in primary_err or "decommissioned" in primary_err or "rate limit" in primary_err:
             for fallback_model in FALLBACK_MODELS:
                 if fallback_model == preferred_model:
                     continue
@@ -147,10 +149,11 @@ Thought:{agent_scratchpad}"""
                     return run_with_model(fallback_model)
                 except Exception:
                     continue
-            return (
-                "The selected Groq model appears to be unavailable or decommissioned. "
-                "Please set a working model in your .env, for example:\n"
-                "GROQ_MODEL=llama-3.3-70b-versatile"
-            )
+            
+            # If all fallbacks fail
+            if "rate_limit" in primary_err or "429" in primary_err or "rate limit" in primary_err:
+                return "Our AI is currently experiencing high traffic and has reached its daily limit. Please try again a bit later!"
+            else:
+                return "The AI models are currently unavailable. Please try again later."
 
-        return f"An error occurred while analyzing the data: {e}"
+        return "Oops! I encountered an unexpected error while trying to process your request. Please try asking in a different way."

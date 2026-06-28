@@ -74,14 +74,29 @@ def get_brand_performance(df: pd.DataFrame) -> str:
     )
     return res.head(50).reset_index().to_markdown(index=False)
 
-def search_products(df: pd.DataFrame, query: str) -> str:
-    """Returns top 10 products matching the search query (keyword)."""
-    if not query or not isinstance(query, str) or query.strip() == "":
+def search_products(df: pd.DataFrame, query_input: str) -> str:
+    """Returns products matching the search query and optional max price.
+    Format of query_input: 'keyword' OR 'keyword|max_price'
+    """
+    if not query_input or not isinstance(query_input, str) or query_input.strip() == "":
         return "Please provide a valid search keyword."
     
-    query = query.lower().strip()
+    parts = [p.strip() for p in query_input.split("|")]
+    query = parts[0].lower()
+    max_price = None
+    if len(parts) > 1:
+        try:
+            max_price = float(parts[1])
+        except ValueError:
+            pass
+            
     mask = df["product_name"].str.lower().str.contains(query, na=False)
     res = df[mask]
+    
+    if max_price is not None:
+        res = res[res["discounted_price"] <= max_price]
+        if res.empty:
+            return f"No products found matching '{query}' under ₹{max_price}."
     
     if res.empty:
         return f"No products found matching '{query}'."
@@ -93,5 +108,5 @@ def search_products(df: pd.DataFrame, query: str) -> str:
     if "num_reviews" in df.columns:
         res = res.sort_values(by="num_reviews", ascending=False)
         
-    return res[cols].head(10).to_markdown(index=False)
+    return res[cols].head(15).to_markdown(index=False)
 
