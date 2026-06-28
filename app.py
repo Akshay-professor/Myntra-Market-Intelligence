@@ -144,12 +144,86 @@ def prepare_rating_buckets(frame: pd.DataFrame) -> pd.DataFrame:
     return bucket_counts
 
 
-def build_chat_context(messages: list, current_query: str) -> str:
-    """Build a compact context string from recent user messages only.
-    
-    Fix #2: Only includes the last 3 USER messages (not AI responses)
-    and truncates each to 120 chars to minimize token usage.
+# ---------- Greeting & Simple Query Handling (No LLM needed) ----------
+
+_GREETING_WORDS = {"hi", "hello", "hey", "hii", "hiii", "hola", "sup", "yo", "greetings"}
+_GREETING_PHRASES = {"how are you", "how r u", "what's up", "whats up", "good morning", "good evening", "good afternoon"}
+
+def _is_greeting(text: str) -> bool:
+    """Check if the user message is a simple greeting."""
+    cleaned = text.strip().lower().rstrip("?!.,")
+    if cleaned in _GREETING_WORDS:
+        return True
+    for phrase in _GREETING_PHRASES:
+        if phrase in cleaned and len(cleaned) < 30:
+            return True
+    return False
+
+_GREETING_RESPONSE = (
+    "Hey there! 👋 Welcome to the Myntra Market Intelligence Agent!\n\n"
+    "I can help you with:\n"
+    "- 🔍 **Finding products** — *'show me jeans under ₹2000'*\n"
+    "- 📊 **Brand analytics** — *'top brands by discount'*\n"
+    "- ⭐ **Ratings & reviews** — *'best rated products'*\n"
+    "- 📈 **Category insights** — *'category pricing summary'*\n\n"
+    "What would you like to explore?"
+)
+
+_PRODUCT_KEYWORDS = [
+    "show me", "find me", "i want", "i need", "search for", "looking for",
+    "buy", "purchase", "suggest", "recommend", "get me",
+]
+
+def _try_direct_product_search(query: str, dataframe) -> str | None:
+    """Attempt to answer simple product queries directly without the LLM.
+    Returns a formatted response string, or None if the query is too complex.
     """
+    import data_tools
+    
+    q = query.lower().strip()
+    
+    # Check if this looks like a product search query
+    is_product_query = any(kw in q for kw in _PRODUCT_KEYWORDS)
+    if not is_product_query:
+        return None
+    
+    # Try to extract a max price
+    import re
+    price_match = re.search(r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q)
+    max_price = float(price_match.group(1)) if price_match else None
+    
+    # Extract the product keyword by stripping common filler words
+    search_term = q
+    for filler in _PRODUCT_KEYWORDS + ["under", "below", "within", "budget", "max", "upto", "up to", 
+                                         "less than", "of", "a", "an", "the", "me", "some", "any",
+                                         "rs", "₹", "inr", "rupees", "rupee", "please", "pls", "plz"]:
+        search_term = search_term.replace(filler, " ")
+    # Remove price numbers
+    search_term = re.sub(r'\d+', '', search_term).strip()
+    # Clean up extra spaces
+    search_term = re.sub(r'\s+', ' ', search_term).strip()
+    
+    if not search_term or len(search_term) < 2:
+        return None
+    
+    # Build the search input
+    search_input = f"{search_term}|{int(max_price)}" if max_price else search_term
+    result = data_tools.search_products(dataframe, search_input)
+    
+    if "No products found" in result:
+        return f"Sorry, I couldn't find any **{search_term}** products" + (f" under ₹{int(max_price)}" if max_price else "") + " in the catalog. Try a different keyword!"
+    
+    # Format nicely
+    header = f"Here are the top results for **{search_term}**"
+    if max_price:
+        header += f" under **₹{int(max_price)}**"
+    header += ":\n\n"
+    
+    return header + result
+
+
+def build_chat_context(messages: list, current_query: str) -> str:
+    """Build a compact context string from recent user messages only."""
     recent_user_msgs = [
         m["content"][:120] for m in messages if m["role"] == "user"
     ][-3:]
@@ -163,6 +237,24 @@ def build_chat_context(messages: list, current_query: str) -> str:
         + "\n".join(context_lines)
         + f"\n\nCurrent question: {current_query}"
     )
+
+
+def get_smart_response(query: str, dataframe, messages: list) -> str:
+    """Smart router: handles greetings and simple product searches locally,
+    only calls the LLM for complex analytical queries. Saves tokens.
+    """
+    # 1. Handle greetings without calling the LLM
+    if _is_greeting(query):
+        return _GREETING_RESPONSE
+    
+    # 2. Try direct product search (no LLM needed)
+    direct_result = _try_direct_product_search(query, dataframe)
+    if direct_result is not None:
+        return direct_result
+    
+    # 3. Complex query → use the LLM agent
+    full_prompt = build_chat_context(messages, query)
+    return get_agent_response(dataframe, full_prompt)
 
 
 # ---------- Session State ----------
@@ -361,9 +453,7 @@ if quick_query:
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                # Build context BEFORE appending current query to avoid duplication
-                full_prompt = build_chat_context(st.session_state.messages, quick_query)
-                response = get_agent_response(df, full_prompt)
+                response = get_smart_response(quick_query, df, st.session_state.messages)
             except Exception as e:
                 logger.error("Quick query failed: %s", e)
                 response = "Something went wrong while processing your request. Please try again!"
@@ -378,12 +468,11 @@ if prompt := st.chat_input("Ask anything about Myntra data..."):
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                # Build context BEFORE appending current query to avoid duplication
-                full_prompt = build_chat_context(st.session_state.messages, prompt)
-                response = get_agent_response(df, full_prompt)
+                response = get_smart_response(prompt, df, st.session_state.messages)
             except Exception as e:
                 logger.error("Chat query failed: %s", e)
                 response = "Something went wrong while processing your request. Please try again!"
             st.markdown(response)
             st.session_state.messages.append({"role": "user", "content": prompt})
             st.session_state.messages.append({"role": "assistant", "content": response})
+
