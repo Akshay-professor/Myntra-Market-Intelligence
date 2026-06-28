@@ -1,4 +1,5 @@
 import os
+import logging
 
 from langchain_classic.agents import AgentExecutor, Tool, create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -6,12 +7,25 @@ from langchain_groq import ChatGroq
 
 import data_tools
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FALLBACK_MODELS = [
     "llama-3.1-8b-instant",
     "gemma2-9b-it",
 ]
+
+_AGENT_STOPPED_PHRASES = [
+    "agent stopped due to iteration limit",
+    "agent stopped due to time limit",
+    "agent stopped due to iteration limit or time limit",
+]
+
+_FRIENDLY_TIMEOUT_MSG = (
+    "I'm having trouble finding the right answer for that question. "
+    "Could you try rephrasing it or being more specific? "
+    "For example: *'Show me polo t-shirts under ₹1000'*"
+)
 
 
 def get_agent_response(df, user_query: str) -> str:
@@ -77,7 +91,7 @@ def get_agent_response(df, user_query: str) -> str:
                 lambda _x: data_tools.get_brand_performance(df),
                 "Tool failed while generating brand performance",
             ),
-            description="Returns brand-wise average rating, average discount and total products sorted by average rating. Ignores input.",
+            description="Returns top 20 brands by average rating, with avg discount and total products. Ignores input.",
         ),
         Tool(
             name="ProductSearch",
@@ -85,13 +99,24 @@ def get_agent_response(df, user_query: str) -> str:
                 lambda x: data_tools.search_products(df, x),
                 "Tool failed while searching products",
             ),
-            description="Searches for products by keyword and optional maximum price. Input format: 'keyword' OR 'keyword|max_price'. Example: 'polo green' or 'jeans|2000'.",
+            description=(
+                "Searches for products by keyword and optional maximum price. "
+                "Input format: 'keyword' OR 'keyword|max_price'. "
+                "Examples: 'polo shirt', 'jeans|2000', 'green kurta|1500'. "
+                "Use this tool for any product discovery, shopping, or browsing queries."
+            ),
         ),
     ]
 
-    template = """You are a Myntra Business Analyst AI.
+    template = """You are a Myntra Shopping Assistant AI.
 Answer clearly using only the data returned by tools.
 If tool outputs are unavailable, explain what went wrong in a friendly way.
+
+RULES:
+1. For product/shopping queries, ALWAYS use the ProductSearch tool first.
+2. If the user mentions a budget or price limit, include it using the pipe format: 'keyword|max_price'.
+3. Do NOT use HighDiscountProducts for shopping queries — use ProductSearch instead.
+4. Keep your Final Answer concise — summarize key findings, don't repeat raw data tables.
 
 IMPORTANT VISUAL FORMATTING:
 If the tool data includes 'image_url' and 'product_url', you MUST format each product in your Final Answer using real markdown images and links. 
@@ -129,17 +154,24 @@ Thought:{agent_scratchpad}"""
             tools=tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=10,
-            max_execution_time=30,
+            max_iterations=5,
+            max_execution_time=60,
         )
         result = executor.invoke({"input": user_query})
-        return result.get("output", "I could not generate an answer based on the data.")
+        output = result.get("output", "I could not generate an answer based on the data.")
+
+        # Detect agent timeout / iteration limit responses
+        if any(phrase in output.lower() for phrase in _AGENT_STOPPED_PHRASES):
+            return _FRIENDLY_TIMEOUT_MSG
+
+        return output
 
     try:
         return run_with_model(preferred_model)
     except Exception as e:
         primary_err = str(e).lower()
-        
+        logger.error("Agent error with model %s: %s", preferred_model, e)
+
         # Try fallback models for rate limits or decommissioned models
         if "rate_limit" in primary_err or "429" in primary_err or "decommissioned" in primary_err or "rate limit" in primary_err:
             for fallback_model in FALLBACK_MODELS:
@@ -147,13 +179,20 @@ Thought:{agent_scratchpad}"""
                     continue
                 try:
                     return run_with_model(fallback_model)
-                except Exception:
+                except Exception as fallback_err:
+                    logger.error("Fallback model %s also failed: %s", fallback_model, fallback_err)
                     continue
-            
+
             # If all fallbacks fail
             if "rate_limit" in primary_err or "429" in primary_err or "rate limit" in primary_err:
-                return "Our AI is currently experiencing high traffic and has reached its daily limit. Please try again a bit later!"
+                return (
+                    "⏳ Our AI is currently experiencing high traffic and has reached its usage limit. "
+                    "Please try again in a few minutes!"
+                )
             else:
                 return "The AI models are currently unavailable. Please try again later."
 
-        return "Oops! I encountered an unexpected error while trying to process your request. Please try asking in a different way."
+        return (
+            "Oops! Something went wrong while processing your request. "
+            "Please try rephrasing your question or try again in a moment."
+        )

@@ -41,7 +41,7 @@ def get_high_discount_products(df: pd.DataFrame, threshold=50) -> str:
     if "image_url" in df.columns: cols.append("image_url")
     if "product_url" in df.columns: cols.append("product_url")
 
-    res = df[df["discount_pct"] > thresh][cols].head(20)
+    res = df[df["discount_pct"] > thresh][cols].head(10)
 
     if res.empty:
         return f"No products found with a discount greater than {thresh}%."
@@ -72,7 +72,8 @@ def get_brand_performance(df: pd.DataFrame) -> str:
         .sort_values("avg_rating", ascending=False)
         .round(2)
     )
-    return res.head(50).reset_index().to_markdown(index=False)
+    return res.head(20).reset_index().to_markdown(index=False)
+
 
 def search_products(df: pd.DataFrame, query_input: str) -> str:
     """Returns products matching the search query and optional max price.
@@ -80,7 +81,7 @@ def search_products(df: pd.DataFrame, query_input: str) -> str:
     """
     if not query_input or not isinstance(query_input, str) or query_input.strip() == "":
         return "Please provide a valid search keyword."
-    
+
     parts = [p.strip() for p in query_input.split("|")]
     query = parts[0].lower()
     max_price = None
@@ -89,24 +90,23 @@ def search_products(df: pd.DataFrame, query_input: str) -> str:
             max_price = float(parts[1])
         except ValueError:
             pass
-            
+
     mask = df["product_name"].str.lower().str.contains(query, na=False)
     res = df[mask]
-    
+
     if max_price is not None:
         res = res[res["discounted_price"] <= max_price]
         if res.empty:
             return f"No products found matching '{query}' under ₹{max_price}."
-    
+
     if res.empty:
         return f"No products found matching '{query}'."
-        
+
     cols = ["product_name", "brand", "discounted_price", "discount_pct", "rating"]
     if "image_url" in df.columns: cols.append("image_url")
     if "product_url" in df.columns: cols.append("product_url")
-    
+
     if "num_reviews" in df.columns:
         res = res.sort_values(by="num_reviews", ascending=False)
-        
-    return res[cols].head(15).to_markdown(index=False)
 
+    return res[cols].head(10).to_markdown(index=False)

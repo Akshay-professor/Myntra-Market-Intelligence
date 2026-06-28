@@ -1,5 +1,6 @@
 import os
 import random
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +8,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from agent import get_agent_response
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,8 +64,17 @@ st.markdown(
 )
 
 
+# ---------- Data Loading (Cached) ----------
+
+@st.cache_data
+def load_csv_data(filepath: str) -> pd.DataFrame:
+    """Load and cache a CSV file so it's only parsed once."""
+    return pd.read_csv(filepath)
+
+
 @st.cache_data
 def generate_sample_data() -> pd.DataFrame:
+    random.seed(42)  # Fix #7: deterministic sample data
     brands = ["Nike", "Adidas", "H&M", "Zara", "Levis", "Puma", "UCB", "Roadster", "HRX", "Biba"]
     categories = ["Men", "Women", "Kids"]
     data = []
@@ -132,8 +144,33 @@ def prepare_rating_buckets(frame: pd.DataFrame) -> pd.DataFrame:
     return bucket_counts
 
 
+def build_chat_context(messages: list, current_query: str) -> str:
+    """Build a compact context string from recent user messages only.
+    
+    Fix #2: Only includes the last 3 USER messages (not AI responses)
+    and truncates each to 120 chars to minimize token usage.
+    """
+    recent_user_msgs = [
+        m["content"][:120] for m in messages if m["role"] == "user"
+    ][-3:]
+
+    if not recent_user_msgs:
+        return current_query
+
+    context_lines = [f"- {msg}" for msg in recent_user_msgs]
+    return (
+        f"Recent user queries for context:\n"
+        + "\n".join(context_lines)
+        + f"\n\nCurrent question: {current_query}"
+    )
+
+
+# ---------- Session State ----------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# ---------- Sidebar ----------
 
 with st.sidebar:
     st.title("🛍️ Myntra Market Intelligence")
@@ -149,11 +186,13 @@ with st.sidebar:
             st.error(f"Error reading file: {e}")
             df = pd.DataFrame()
     else:
+        # Fix #1 & #13: Cached loading with spinner
         if LOCAL_FULL_DATA_FILE.exists():
-            df = pd.read_csv(LOCAL_FULL_DATA_FILE)
-            st.info("Using local cleaned dataset (Full Data).")
+            with st.spinner("Loading full dataset..."):
+                df = load_csv_data(str(LOCAL_FULL_DATA_FILE))
+            st.info(f"Using local cleaned dataset ({len(df):,} products).")
         elif SAMPLE_DATA_FILE.exists():
-            df = pd.read_csv(SAMPLE_DATA_FILE)
+            df = load_csv_data(str(SAMPLE_DATA_FILE))
             st.info("Using default sample dataset (50 rows).")
         else:
             df = generate_sample_data()
@@ -162,8 +201,8 @@ with st.sidebar:
     if not df.empty:
         st.markdown("### Dataset Stats")
         c1, c2 = st.columns(2)
-        c1.metric("Total Products", f"{len(df)}")
-        c2.metric("Brands", f"{df['brand'].nunique() if 'brand' in df.columns else 0}")
+        c1.metric("Total Products", f"{len(df):,}")
+        c2.metric("Brands", f"{df['brand'].nunique() if 'brand' in df.columns else 0:,}")
 
         c3, c4 = st.columns(2)
         c3.metric("Categories", f"{df['category'].nunique() if 'category' in df.columns else 0}")
@@ -191,6 +230,8 @@ with st.sidebar:
             mime="text/plain",
             use_container_width=True,
         )
+
+# ---------- Main Content ----------
 
 st.header("Myntra Market Intelligence Agent")
 st.subheader("Powered by Groq AI + LangChain")
@@ -289,6 +330,8 @@ with visual_tabs[3]:
         use_container_width=True,
     )
 
+# ---------- Quick Insight Buttons ----------
+
 st.markdown("**Quick Insights**")
 q1, q2, q3, q4 = st.columns(4)
 
@@ -302,10 +345,14 @@ if q3.button("⭐ Best Rated", use_container_width=True):
 if q4.button("📊 Category Summary", use_container_width=True):
     quick_query = "Give me a summary of average price and discount for each category."
 
+# ---------- Chat Display ----------
+
 for message in st.session_state.messages:
     avatar = "🧑" if message["role"] == "user" else "🤖"
     with st.chat_message(message["role"], avatar=avatar):
         st.markdown(message["content"])
+
+# ---------- Chat Handlers ----------
 
 if quick_query:
     st.session_state.messages.append({"role": "user", "content": quick_query})
@@ -315,16 +362,12 @@ if quick_query:
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                # Compile chat history to give the agent context
-                history_context = "\n".join([
-                    f"{m['role']}: {m['content']}" 
-                    for m in st.session_state.messages[-5:-1]
-                ])
-                full_prompt = f"Previous Chat History:\n{history_context}\n\nNew User Query: {quick_query}" if history_context else quick_query
-                
+                full_prompt = build_chat_context(st.session_state.messages, quick_query)
                 response = get_agent_response(df, full_prompt)
             except Exception as e:
-                response = f"An unexpected error occurred: {e}"
+                # Fix #4: Never expose raw errors to users
+                logger.error("Quick query failed: %s", e)
+                response = "Something went wrong while processing your request. Please try again!"
             st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
 
@@ -336,15 +379,11 @@ if prompt := st.chat_input("Ask anything about Myntra data..."):
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                # Compile chat history to give the agent context
-                history_context = "\n".join([
-                    f"{m['role']}: {m['content']}" 
-                    for m in st.session_state.messages[-5:-1]
-                ])
-                full_prompt = f"Previous Chat History:\n{history_context}\n\nNew User Query: {prompt}" if history_context else prompt
-                
+                full_prompt = build_chat_context(st.session_state.messages, prompt)
                 response = get_agent_response(df, full_prompt)
             except Exception as e:
-                response = f"An unexpected error occurred: {e}"
+                # Fix #4: Never expose raw errors to users
+                logger.error("Chat query failed: %s", e)
+                response = "Something went wrong while processing your request. Please try again!"
             st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
