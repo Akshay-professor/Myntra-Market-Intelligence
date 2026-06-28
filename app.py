@@ -11,6 +11,7 @@ from agent import get_agent_response
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 SAMPLE_DATA_FILE = BASE_DIR / "data" / "sample" / "myntra_sample_data.csv"
+LOCAL_FULL_DATA_FILE = BASE_DIR / "cleaned_myntra_data.csv"
 
 st.set_page_config(page_title="Myntra Market Intelligence", page_icon="🛍️", layout="wide")
 
@@ -148,7 +149,10 @@ with st.sidebar:
             st.error(f"Error reading file: {e}")
             df = pd.DataFrame()
     else:
-        if SAMPLE_DATA_FILE.exists():
+        if LOCAL_FULL_DATA_FILE.exists():
+            df = pd.read_csv(LOCAL_FULL_DATA_FILE)
+            st.info("Using local cleaned dataset (Full Data).")
+        elif SAMPLE_DATA_FILE.exists():
             df = pd.read_csv(SAMPLE_DATA_FILE)
             st.info("Using default sample dataset (50 rows).")
         else:
