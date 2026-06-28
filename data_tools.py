@@ -23,7 +23,10 @@ def get_category_summary(df: pd.DataFrame) -> str:
 
 def get_most_reviewed_products(df: pd.DataFrame) -> str:
     """Returns top 10 products by num_reviews with their ratings."""
-    res = df.nlargest(10, "num_reviews")[["product_name", "num_reviews", "rating"]]
+    cols = ["product_name", "num_reviews", "rating"]
+    if "image_url" in df.columns: cols.append("image_url")
+    if "product_url" in df.columns: cols.append("product_url")
+    res = df.nlargest(10, "num_reviews")[cols]
     return res.to_markdown(index=False)
 
 
@@ -34,9 +37,11 @@ def get_high_discount_products(df: pd.DataFrame, threshold=50) -> str:
     except (ValueError, TypeError):
         thresh = 50.0
 
-    res = df[df["discount_pct"] > thresh][
-        ["product_name", "brand", "discount_pct", "discounted_price"]
-    ].head(20)
+    cols = ["product_name", "brand", "discount_pct", "discounted_price"]
+    if "image_url" in df.columns: cols.append("image_url")
+    if "product_url" in df.columns: cols.append("product_url")
+
+    res = df[df["discount_pct"] > thresh][cols].head(20)
 
     if res.empty:
         return f"No products found with a discount greater than {thresh}%."

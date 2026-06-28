@@ -85,6 +85,15 @@ def get_agent_response(df, user_query: str) -> str:
 Answer clearly using only the data returned by tools.
 If tool outputs are unavailable, explain what went wrong in a friendly way.
 
+IMPORTANT VISUAL FORMATTING:
+If the tool data includes 'image_url' and 'product_url', you MUST format each product in your Final Answer using real markdown images and links. 
+Example format:
+**[Product Name]**
+![Product Image](image_url)
+Price: ₹[discounted_price] | Discount: [discount_pct]%
+[🔗 View on Myntra](product_url)
+---
+
 You have access to the following tools:
 {tools}
 
