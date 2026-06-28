@@ -315,7 +315,14 @@ if quick_query:
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                response = get_agent_response(df, quick_query)
+                # Compile chat history to give the agent context
+                history_context = "\n".join([
+                    f"{m['role']}: {m['content']}" 
+                    for m in st.session_state.messages[-5:-1]
+                ])
+                full_prompt = f"Previous Chat History:\n{history_context}\n\nNew User Query: {quick_query}" if history_context else quick_query
+                
+                response = get_agent_response(df, full_prompt)
             except Exception as e:
                 response = f"An unexpected error occurred: {e}"
             st.markdown(response)
@@ -329,7 +336,14 @@ if prompt := st.chat_input("Ask anything about Myntra data..."):
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
-                response = get_agent_response(df, prompt)
+                # Compile chat history to give the agent context
+                history_context = "\n".join([
+                    f"{m['role']}: {m['content']}" 
+                    for m in st.session_state.messages[-5:-1]
+                ])
+                full_prompt = f"Previous Chat History:\n{history_context}\n\nNew User Query: {prompt}" if history_context else prompt
+                
+                response = get_agent_response(df, full_prompt)
             except Exception as e:
                 response = f"An unexpected error occurred: {e}"
             st.markdown(response)

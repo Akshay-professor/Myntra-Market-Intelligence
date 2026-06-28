@@ -79,6 +79,14 @@ def get_agent_response(df, user_query: str) -> str:
             ),
             description="Returns brand-wise average rating, average discount and total products sorted by average rating. Ignores input.",
         ),
+        Tool(
+            name="ProductSearch",
+            func=safe_tool_call(
+                lambda x: data_tools.search_products(df, x),
+                "Tool failed while searching products",
+            ),
+            description="Searches for products by a specific keyword (e.g., 'polo green', 'nike shoes'). Input must be a single search string.",
+        ),
     ]
 
     template = """You are a Myntra Business Analyst AI.

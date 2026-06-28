@@ -73,3 +73,25 @@ def get_brand_performance(df: pd.DataFrame) -> str:
         .round(2)
     )
     return res.head(50).reset_index().to_markdown(index=False)
+
+def search_products(df: pd.DataFrame, query: str) -> str:
+    """Returns top 10 products matching the search query (keyword)."""
+    if not query or not isinstance(query, str) or query.strip() == "":
+        return "Please provide a valid search keyword."
+    
+    query = query.lower().strip()
+    mask = df["product_name"].str.lower().str.contains(query, na=False)
+    res = df[mask]
+    
+    if res.empty:
+        return f"No products found matching '{query}'."
+        
+    cols = ["product_name", "brand", "discounted_price", "discount_pct", "rating"]
+    if "image_url" in df.columns: cols.append("image_url")
+    if "product_url" in df.columns: cols.append("product_url")
+    
+    if "num_reviews" in df.columns:
+        res = res.sort_values(by="num_reviews", ascending=False)
+        
+    return res[cols].head(10).to_markdown(index=False)
+
