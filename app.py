@@ -355,35 +355,35 @@ for message in st.session_state.messages:
 # ---------- Chat Handlers ----------
 
 if quick_query:
-    st.session_state.messages.append({"role": "user", "content": quick_query})
     with st.chat_message("user", avatar="🧑"):
         st.markdown(quick_query)
 
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
+                # Build context BEFORE appending current query to avoid duplication
                 full_prompt = build_chat_context(st.session_state.messages, quick_query)
                 response = get_agent_response(df, full_prompt)
             except Exception as e:
-                # Fix #4: Never expose raw errors to users
                 logger.error("Quick query failed: %s", e)
                 response = "Something went wrong while processing your request. Please try again!"
             st.markdown(response)
+            st.session_state.messages.append({"role": "user", "content": quick_query})
             st.session_state.messages.append({"role": "assistant", "content": response})
 
 if prompt := st.chat_input("Ask anything about Myntra data..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user", avatar="🧑"):
         st.markdown(prompt)
 
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Agent is analyzing..."):
             try:
+                # Build context BEFORE appending current query to avoid duplication
                 full_prompt = build_chat_context(st.session_state.messages, prompt)
                 response = get_agent_response(df, full_prompt)
             except Exception as e:
-                # Fix #4: Never expose raw errors to users
                 logger.error("Chat query failed: %s", e)
                 response = "Something went wrong while processing your request. Please try again!"
             st.markdown(response)
+            st.session_state.messages.append({"role": "user", "content": prompt})
             st.session_state.messages.append({"role": "assistant", "content": response})

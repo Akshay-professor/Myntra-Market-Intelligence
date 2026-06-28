@@ -113,10 +113,11 @@ Answer clearly using only the data returned by tools.
 If tool outputs are unavailable, explain what went wrong in a friendly way.
 
 RULES:
-1. For product/shopping queries, ALWAYS use the ProductSearch tool first.
-2. If the user mentions a budget or price limit, include it using the pipe format: 'keyword|max_price'.
-3. Do NOT use HighDiscountProducts for shopping queries — use ProductSearch instead.
-4. Keep your Final Answer concise — summarize key findings, don't repeat raw data tables.
+1. For greetings or casual chat (like 'hi', 'hello', 'how are you'), respond in a friendly way WITHOUT using any tools. Just say hello and ask how you can help with Myntra shopping.
+2. For product/shopping queries, ALWAYS use the ProductSearch tool first.
+3. If the user mentions a budget or price limit, include it using the pipe format: 'keyword|max_price'.
+4. Do NOT use HighDiscountProducts for shopping queries — use ProductSearch instead.
+5. Keep your Final Answer concise — summarize key findings, don't repeat raw data tables.
 
 IMPORTANT VISUAL FORMATTING:
 If the tool data includes 'image_url' and 'product_url', you MUST format each product in your Final Answer using real markdown images and links. 
@@ -154,7 +155,7 @@ Thought:{agent_scratchpad}"""
             tools=tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=5,
+            max_iterations=8,
             max_execution_time=60,
         )
         result = executor.invoke({"input": user_query})
