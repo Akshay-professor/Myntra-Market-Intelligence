@@ -188,6 +188,7 @@ def _try_direct_product_search(query: str, dataframe) -> str | None:
     """
     import re
     import data_tools
+    import pandas as pd
 
     q = query.lower().strip()
 
@@ -196,21 +197,32 @@ def _try_direct_product_search(query: str, dataframe) -> str | None:
         return None
 
     # Try to extract a max price
-    price_match = re.search(
+    max_price = None
+    min_price = None
+    
+    price_match_max = re.search(
         r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
     )
-    max_price = float(price_match.group(1)) if price_match else None
+    if price_match_max:
+        max_price = float(price_match_max.group(1))
+        
+    price_match_min = re.search(
+        r'(?:above|over|more than|min|minimum)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
+    )
+    if price_match_min:
+        min_price = float(price_match_min.group(1))
 
     # Filler phrases to strip (multi-word first, then single words)
     filler_phrases = [
         "show me", "find me", "i want to buy", "i want to purchase",
         "i want", "i need", "search for", "looking for", "get me",
-        "up to", "less than",
+        "up to", "less than", "more than"
     ]
     filler_words = [
         "show", "find", "buy", "purchase", "suggest", "recommend",
         "under", "below", "within", "budget", "max", "upto",
-        "please", "pls", "plz", "some", "any",
+        "above", "over", "min", "minimum",
+        "please", "pls", "plz", "some", "any", "the",
         "rs", "₹", "inr", "rupees", "rupee",
     ]
 
@@ -218,7 +230,7 @@ def _try_direct_product_search(query: str, dataframe) -> str | None:
     # Strip multi-word fillers first (order matters)
     for filler in filler_phrases:
         search_term = search_term.replace(filler, " ")
-    # Strip single filler words using word boundaries (so "a" doesn't break "jeans")
+    # Strip single filler words using word boundaries
     for word in filler_words:
         search_term = re.sub(r'\b' + re.escape(word) + r'\b', ' ', search_term)
     # Remove price numbers
@@ -229,24 +241,43 @@ def _try_direct_product_search(query: str, dataframe) -> str | None:
     if not search_term or len(search_term) < 2:
         return None
 
-    # Build the search input
-    search_input = f"{search_term}|{int(max_price)}" if max_price else search_term
-    result = data_tools.search_products(dataframe, search_input)
+    # Search using the new robust data_tools.find_products
+    keywords = search_term.split()
+    results = data_tools.find_products(
+        dataframe, keywords, min_price=min_price, max_price=max_price, limit=10
+    )
 
-    if "No products found" in result:
-        return (
-            f"Sorry, I couldn't find any **{search_term}** products"
-            + (f" under ₹{int(max_price)}" if max_price else "")
-            + " in the catalog. Try a different keyword!"
-        )
+    if results.empty:
+        msg = f"Sorry, I couldn't find any **{search_term}** products"
+        if max_price: msg += f" under ₹{int(max_price)}"
+        if min_price: msg += f" above ₹{int(min_price)}"
+        return msg + " in the catalog. Try a different keyword!"
 
-    # Format nicely
+    # Format nicely with rich markdown instead of a raw table
     header = f"Here are the top results for **{search_term}**"
-    if max_price:
-        header += f" under **₹{int(max_price)}**"
+    if max_price: header += f" under **₹{int(max_price)}**"
+    if min_price: header += f" above **₹{int(min_price)}**"
     header += ":\n\n"
+    
+    formatted_items = []
+    for _, row in results.iterrows():
+        name = row.get('product_name', 'Product')
+        brand = row.get('brand', 'Unknown')
+        price = row.get('discounted_price', 'N/A')
+        discount = row.get('discount_pct', '0')
+        img_url = row.get('image_url', '')
+        prod_url = row.get('product_url', '#')
+        
+        item = f"**{brand} - {name}**\n\n"
+        if pd.notna(img_url) and str(img_url).strip() and str(img_url).strip() != '-':
+            item += f"![Product Image]({img_url})\n\n"
+        item += f"Price: ₹{price} | Discount: {discount}%\n\n"
+        item += f"[🔗 View on Myntra]({prod_url})\n\n"
+        item += "---\n"
+        
+        formatted_items.append(item)
 
-    return header + result
+    return header + "\n".join(formatted_items)
 
 
 def build_chat_context(messages: list, current_query: str) -> str:
