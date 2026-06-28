@@ -72,4 +72,4 @@ def get_brand_performance(df: pd.DataFrame) -> str:
         .sort_values("avg_rating", ascending=False)
         .round(2)
     )
-    return res.reset_index().to_markdown(index=False)
+    return res.head(50).reset_index().to_markdown(index=False)
