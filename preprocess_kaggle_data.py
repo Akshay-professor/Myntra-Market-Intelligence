@@ -34,7 +34,13 @@ def preprocess_myntra_data(input_file, output_file, sample_size=100000):
             return 'Unisex'
             
     df['category'] = df['product_name'].apply(get_category)
-    
+
+    print("Deriving product types...")
+    # 2b. Derive a fine-grained product_type (jeans, tshirt, kurta, shoes, ...)
+    #     from the product name using the shared taxonomy.
+    import taxonomy
+    df['product_type'] = df['product_name'].apply(taxonomy.derive_product_type)
+
     print("Cleaning image URLs and discount percentage...")
     # 3. Clean the image URL (Kaggle dataset has multiple images separated by ';', we just want the first one)
     df['image_url'] = df['image_url'].astype(str).str.split(';').str[0]
@@ -46,8 +52,8 @@ def preprocess_myntra_data(input_file, output_file, sample_size=100000):
     
     print("Dropping unused columns...")
     # 5. Drop columns the app doesn't need to save space
-    columns_to_keep = ['product_id', 'product_name', 'brand', 'category', 
-                       'original_price', 'discount_pct', 'discounted_price', 
+    columns_to_keep = ['product_id', 'product_name', 'brand', 'category', 'product_type',
+                       'original_price', 'discount_pct', 'discounted_price',
                        'rating', 'num_reviews', 'image_url', 'product_url']
     df = df[columns_to_keep]
     

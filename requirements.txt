@@ -1,8 +1,10 @@
 streamlit
 pandas
+scikit-learn
 langchain
 langchain-classic
 langchain-groq
 langchain-experimental
 python-dotenv
 tabulate
+pytest

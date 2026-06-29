@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 
 
@@ -83,33 +85,37 @@ def find_products(df: pd.DataFrame, keywords: list[str],
                   min_price: float | None = None,
                   max_price: float | None = None,
                   limit: int = 10,
-                  match_all: bool = True) -> pd.DataFrame:
+                  match_all: bool = True,
+                  min_discount: float | None = None,
+                  sort_by_rating: bool = False) -> pd.DataFrame:
     """Search products by matching keywords against product_name, brand, and category.
 
+    Keywords are matched on a WORD-BOUNDARY basis (``\\bkeyword``) so "men" does not
+    match "women" and "tshirt" does not match "sweatshirt", while plurals like
+    "tshirts" still match "tshirt".
+
     With ``match_all=True`` (default), a product must contain EVERY meaningful keyword
-    (AND logic) in its combined name+brand+category text — so "black jeans" only returns
-    black jeans, not anything that merely contains "black". If that strict pass returns
-    nothing, it gracefully falls back to OR logic (any keyword) so rare or misspelled
-    queries still surface something.
+    (AND logic); if that strict pass returns nothing it gracefully falls back to OR
+    logic so rare or misspelled queries still surface something.
 
-    Returns a DataFrame of matching products, sorted by num_reviews descending.
+    ``min_price`` / ``max_price`` filter on discounted price; ``min_discount`` filters on
+    discount percentage. When no keywords are given but a filter is, the whole catalog is
+    browsed through that filter (e.g. "products above 70% discount").
+
+    Results are sorted by review count (or rating first when ``sort_by_rating``).
     """
-    if not keywords:
-        return pd.DataFrame()
+    has_filter = (
+        min_price is not None or max_price is not None or min_discount is not None
+    )
 
-    meaningful = [kw.lower().strip() for kw in keywords if len(kw.lower().strip()) >= 2]
-    if not meaningful:
-        return pd.DataFrame()
+    meaningful = [kw.lower().strip() for kw in (keywords or []) if len(kw.lower().strip()) >= 2]
 
-    # One combined, lowercased searchable string per row.
-    combined = (
-        df["product_name"].astype(str) + " "
-        + df["brand"].astype(str) + " "
-        + df["category"].astype(str)
-    ).str.lower()
-
-    # Per-keyword hit masks against the combined text.
-    hits = [combined.str.contains(kw, na=False, regex=False) for kw in meaningful]
+    # One combined, lowercased searchable string per row (includes product_type
+    # when present so type keywords match even if absent from the product name).
+    combined = df["product_name"].astype(str) + " " + df["brand"].astype(str)
+    if "product_type" in df.columns:
+        combined = combined + " " + df["product_type"].astype(str)
+    combined = (combined + " " + df["category"].astype(str)).str.lower()
 
     def _apply(mask: pd.Series) -> pd.DataFrame:
         res = df[mask]
@@ -117,9 +123,25 @@ def find_products(df: pd.DataFrame, keywords: list[str],
             res = res[res["discounted_price"] >= min_price]
         if max_price is not None:
             res = res[res["discounted_price"] <= max_price]
-        if "num_reviews" in res.columns:
-            res = res.sort_values(by=["num_reviews", "rating"], ascending=[False, False])
+        if min_discount is not None and "discount_pct" in res.columns:
+            res = res[res["discount_pct"] >= min_discount]
+        sort_cols = ["rating", "num_reviews"] if sort_by_rating else ["num_reviews", "rating"]
+        avail = [c for c in sort_cols if c in res.columns]
+        if avail:
+            res = res.sort_values(by=avail, ascending=[False] * len(avail))
         return res
+
+    # No keywords: only browse the catalog if a numeric filter was supplied.
+    if not meaningful:
+        if has_filter:
+            return _apply(pd.Series(True, index=df.index)).head(limit)
+        return pd.DataFrame()
+
+    # Per-keyword hit masks: keyword must appear at a word start.
+    hits = [
+        combined.str.contains(r"\b" + re.escape(kw), na=False, regex=True)
+        for kw in meaningful
+    ]
 
     # AND mask: every keyword must hit.
     and_mask = hits[0].copy()

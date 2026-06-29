@@ -66,10 +66,19 @@ st.markdown(
 
 # ---------- Data Loading (Cached) ----------
 
+def _ensure_product_type(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add a derived `product_type` column if the dataset doesn't already have one."""
+    import taxonomy
+    if "product_type" not in frame.columns and "product_name" in frame.columns:
+        frame = frame.copy()
+        frame["product_type"] = frame["product_name"].apply(taxonomy.derive_product_type)
+    return frame
+
+
 @st.cache_data
 def load_csv_data(filepath: str) -> pd.DataFrame:
     """Load and cache a CSV file so it's only parsed once."""
-    return pd.read_csv(filepath)
+    return _ensure_product_type(pd.read_csv(filepath))
 
 
 @st.cache_data
@@ -101,7 +110,7 @@ def generate_sample_data() -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(data)
+    return _ensure_product_type(pd.DataFrame(data))
 
 
 def validate_dataframe(df: pd.DataFrame) -> tuple[bool, str]:
@@ -149,6 +158,21 @@ def prepare_rating_buckets(frame: pd.DataFrame) -> pd.DataFrame:
 import re
 import data_tools
 import classifier
+import taxonomy
+import semantic_search
+
+
+@st.cache_resource(show_spinner=False)
+def get_semantic_index(_dataframe, signature):
+    """Build (and cache) the TF-IDF semantic index for the active dataset.
+
+    ``_dataframe`` is excluded from the cache key (leading underscore); ``signature``
+    keys the cache so the index rebuilds only when the dataset actually changes.
+    """
+    if not semantic_search.is_available():
+        return None
+    corpus = semantic_search.make_corpus(_dataframe)
+    return semantic_search.build_index(corpus)
 
 _GREETING_RESPONSE = (
     "Hey there! 👋 Welcome to the Myntra Market Intelligence Agent!\n\n"
@@ -174,47 +198,81 @@ _OUT_OF_SCOPE_RESPONSE = (
 _FILLER_PHRASES = [
     "show me", "find me", "i want to buy", "i want to purchase",
     "i want", "i need", "search for", "looking for", "get me",
-    "up to", "less than", "more than",
+    "up to", "less than", "more than", "greater than",
 ]
 _FILLER_WORDS = [
     "show", "find", "buy", "purchase", "suggest", "recommend",
     "under", "below", "within", "budget", "max", "upto",
     "above", "over", "min", "minimum",
     "expensive", "cheap", "cheaper", "affordable", "costly",
-    "please", "pls", "plz", "some", "any", "the",
+    "please", "pls", "plz", "some", "any", "the", "a", "an",
     "rs", "₹", "inr", "rupees", "rupee",
+    # discount / sorting noise
+    "discount", "off", "percent", "percentage",
+    "best", "rated", "rating", "top", "good", "nice", "popular",
+    "highest", "great",
+    # generic noise
+    "with", "for", "size", "sizes", "and", "or", "free", "to",
+    "hack", "hacks", "get", "products", "product", "item", "items",
 ]
 
 
 def _extract_search_params(query: str):
-    """Parse a product query into (keywords, min_price, max_price, search_term)."""
+    """Parse a product query into structured search parameters.
+
+    Returns (keywords, min_price, max_price, min_discount, sort_by_rating, search_term).
+    """
     q = query.lower().strip()
 
+    # --- Discount filter ("70% off", "above 50% discount", "discount over 60") ---
+    min_discount = None
+    dm = re.search(r'(\d+)\s*%?\s*(?:off|discount)', q)
+    if dm:
+        min_discount = float(dm.group(1))
+    else:
+        dm = re.search(
+            r'(?:off|discount)\s*(?:above|over|more than|greater than|of|at\s*least)?\s*(\d+)', q
+        )
+        if dm:
+            min_discount = float(dm.group(1))
+
+    # Remove the discount phrase so it isn't mistaken for a price below.
+    q_price = q
+    if min_discount is not None:
+        q_price = re.sub(r'\d+\s*%?\s*(?:off|discount)', ' ', q_price)
+        q_price = re.sub(
+            r'(?:off|discount)\s*(?:above|over|more than|greater than|of|at\s*least)?\s*\d+', ' ', q_price
+        )
+
+    # --- Price filters ---
     max_price = None
     min_price = None
-
     m = re.search(
-        r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
+        r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q_price
     )
     if m:
         max_price = float(m.group(1))
-
     m = re.search(
-        r'(?:above|over|more than|min|minimum)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
+        r'(?:above|over|more than|min|minimum)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q_price
     )
     if m:
         min_price = float(m.group(1))
 
+    # --- Sort hint ---
+    sort_by_rating = bool(re.search(r'(best|top|highest|good)\s*rated|\brating\b', q))
+
+    # --- Keywords (strip fillers, numbers, punctuation) ---
     search_term = q
     for filler in _FILLER_PHRASES:
         search_term = search_term.replace(filler, " ")
     for word in _FILLER_WORDS:
         search_term = re.sub(r'\b' + re.escape(word) + r'\b', ' ', search_term)
     search_term = re.sub(r'\d+', '', search_term)
+    search_term = re.sub(r'[%₹]', ' ', search_term)
     search_term = re.sub(r'\s+', ' ', search_term).strip()
 
     keywords = search_term.split()
-    return keywords, min_price, max_price, search_term
+    return keywords, min_price, max_price, min_discount, sort_by_rating, search_term
 
 
 def _product_search_message(query: str, dataframe) -> dict:
@@ -223,25 +281,55 @@ def _product_search_message(query: str, dataframe) -> dict:
     Returns either a {"kind": "products", ...} message or a plain text message
     (for the "no results" case).
     """
-    keywords, min_price, max_price, search_term = _extract_search_params(query)
+    keywords, min_price, max_price, min_discount, sort_by_rating, search_term = \
+        _extract_search_params(query)
 
-    if not keywords:
+    # Map synonyms (denim -> jeans, tee -> tshirt, ...) so phrasing differences
+    # still hit the catalog.
+    keywords = taxonomy.expand_synonyms(keywords)
+
+    has_filter = min_price is not None or max_price is not None or min_discount is not None
+
+    # Need either a keyword or a numeric filter to run a search.
+    if not keywords and not has_filter:
         return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
 
     results = data_tools.find_products(
-        dataframe, keywords, min_price=min_price, max_price=max_price, limit=24
+        dataframe, keywords, min_price=min_price, max_price=max_price,
+        min_discount=min_discount, sort_by_rating=sort_by_rating, limit=24,
     )
 
-    label = search_term or query.strip()
+    # Semantic fallback: if keyword search found nothing (typo / unusual phrasing),
+    # rank the whole catalog by TF-IDF similarity, then re-apply the numeric filters.
+    if results.empty and keywords:
+        index = get_semantic_index(dataframe, (len(dataframe), tuple(dataframe.columns)))
+        positions = semantic_search.rank(index, search_term or query, top_n=60)
+        if positions:
+            candidate = dataframe.iloc[positions]
+            results = data_tools.find_products(
+                candidate, [], min_price=min_price, max_price=max_price,
+                min_discount=min_discount, sort_by_rating=sort_by_rating, limit=24,
+            )
+            # find_products with no keywords + no filter returns empty; in that case
+            # keep the semantic order directly.
+            if results.empty and not has_filter:
+                results = candidate.head(24)
+
+    label = search_term or "products"
     if results.empty:
-        msg = f"Sorry, I couldn't find any **{label}** products"
+        msg = f"Sorry, I couldn't find any **{label}**"
+        if min_discount:
+            msg += f" with {int(min_discount)}%+ discount"
         if max_price:
             msg += f" under ₹{int(max_price)}"
         if min_price:
             msg += f" above ₹{int(min_price)}"
         return {"role": "assistant", "content": msg + " in the catalog. Try a different keyword!"}
 
-    header = f"Here are the top results for **{label}**"
+    prefix = "Top-rated" if sort_by_rating else "Top"
+    header = f"{prefix} results for **{label}**"
+    if min_discount:
+        header += f" with **{int(min_discount)}%+ off**"
     if max_price:
         header += f" under **₹{int(max_price)}**"
     if min_price:
@@ -254,7 +342,9 @@ def _product_search_message(query: str, dataframe) -> dict:
             "name": str(row.get("product_name", "Product")),
             "brand": str(row.get("brand", "Unknown")),
             "price": row.get("discounted_price", "N/A"),
+            "original_price": row.get("original_price", None),
             "discount": row.get("discount_pct", 0),
+            "rating": row.get("rating", None),
             "img": str(img_url) if pd.notna(img_url) else "",
             "url": str(row.get("product_url", "#")),
         })
@@ -305,10 +395,97 @@ def get_smart_response(query: str, dataframe, messages: list) -> dict:
 # ---------- Product Carousel Renderer ----------
 
 _CAROUSEL_WINDOW = 3
+_MYNTRA_PINK = "#ff3f6c"
+
+
+def _fmt_price(value) -> str | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return f"{int(round(float(value))):,}"
+    except (ValueError, TypeError):
+        return None
+
+
+def _product_card_html(item: dict) -> str:
+    """Build one Myntra-style product card as an HTML string."""
+    img = item.get("img", "")
+    img = img.strip() if isinstance(img, str) else ""
+    has_img = bool(img) and img != "-" and img.lower() != "nan"
+
+    brand = str(item.get("brand", "")).strip()
+    name = str(item.get("name", "")).strip()
+    url = item.get("url", "#") or "#"
+
+    price = _fmt_price(item.get("price"))
+    mrp = _fmt_price(item.get("original_price"))
+    try:
+        discount = float(item.get("discount", 0) or 0)
+    except (ValueError, TypeError):
+        discount = 0.0
+    try:
+        rating = float(item.get("rating")) if item.get("rating") is not None else None
+        if rating is not None and pd.isna(rating):
+            rating = None
+    except (ValueError, TypeError):
+        rating = None
+
+    image_block = (
+        f'<img src="{img}" style="width:100%;height:210px;object-fit:cover;'
+        'border-radius:6px 6px 0 0;display:block;" '
+        'onerror="this.style.display=\'none\'"/>'
+        if has_img else
+        '<div style="width:100%;height:210px;background:#f5f5f6;border-radius:6px 6px 0 0;'
+        'display:flex;align-items:center;justify-content:center;color:#bbb;font-size:13px;">'
+        'No image</div>'
+    )
+
+    rating_badge = ""
+    if rating is not None:
+        rating_badge = (
+            f'<span style="background:#fff !important;border:1px solid #eaeaec;border-radius:3px;'
+            'padding:1px 5px;font-size:11px;font-weight:700;color:#282c3f !important;'
+            f'box-shadow:0 1px 2px rgba(0,0,0,.08);">{rating:.1f} '
+            '<span style="color:#14958f !important;">★</span></span>'
+        )
+
+    price_line = ""
+    if price is not None:
+        price_line = f'<span style="font-weight:700;color:#282c3f !important;">₹{price}</span>'
+        if mrp is not None and discount > 0:
+            price_line += (
+                f' <span style="color:#7e818c !important;text-decoration:line-through;'
+                f'font-size:12px;">₹{mrp}</span>'
+            )
+        if discount > 0:
+            price_line += (
+                f' <span style="color:#ff905a !important;font-size:12px;font-weight:700;">'
+                f'({discount:.0f}% OFF)</span>'
+            )
+
+    return (
+        '<div style="flex:1;min-width:0;background:#fff !important;border:1px solid #f0f0f3;'
+        'border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.08);overflow:hidden;'
+        'display:flex;flex-direction:column;">'
+        f'{image_block}'
+        '<div style="padding:10px 12px 12px;display:flex;flex-direction:column;gap:4px;">'
+        f'<div style="font-weight:700;color:#282c3f !important;font-size:14px;">{brand}</div>'
+        f'<div style="color:#7e818c !important;font-size:12px;white-space:nowrap;overflow:hidden;'
+        f'text-overflow:ellipsis;">{name}</div>'
+        f'<div style="margin-top:2px;">{price_line}</div>'
+        f'<div style="margin-top:4px;">{rating_badge}</div>'
+        f'<a href="{url}" target="_blank" style="margin-top:8px;text-align:center;'
+        f'background:{_MYNTRA_PINK} !important;color:#fff !important;font-weight:700;font-size:12px;'
+        'padding:7px 0;border-radius:4px;text-decoration:none;letter-spacing:.3px;">VIEW ON MYNTRA</a>'
+        '</div></div>'
+    )
 
 
 def render_product_carousel(msg: dict, msg_key: int) -> None:
-    """Render a horizontal, paginated carousel of product cards for a message."""
+    """Render a horizontal, paginated carousel of Myntra-style product cards.
+
+    Navigation arrows sit on the left and right sides of the row.
+    """
     items = msg.get("items", [])
     header = msg.get("header", "")
     if header:
@@ -323,40 +500,37 @@ def render_product_carousel(msg: dict, msg_key: int) -> None:
     offset = max(0, min(offset, max(0, total - _CAROUSEL_WINDOW)))
 
     window = items[offset:offset + _CAROUSEL_WINDOW]
-    cols = st.columns(_CAROUSEL_WINDOW)
-    for col, item in zip(cols, window):
-        with col:
-            img = item.get("img", "")
-            if img and img.strip() and img.strip() != "-":
-                st.image(img, use_container_width=True)
-            st.markdown(f"**{item.get('brand', '')}**")
-            st.caption(item.get("name", ""))
-            st.markdown(
-                f"₹{item.get('price', 'N/A')} &nbsp;·&nbsp; "
-                f"{item.get('discount', 0)}% off"
-            )
-            st.markdown(f"[🔗 View on Myntra]({item.get('url', '#')})")
 
-    # Navigation row: ◀  "x–y of N"  ▶
-    nav_prev, nav_info, nav_next = st.columns([1, 2, 1])
-    with nav_prev:
-        if st.button("◀ Prev", key=f"carousel_prev_{msg_key}",
+    # Layout: [◀]  [ cards ]  [▶]
+    left, mid, right = st.columns([0.6, 11, 0.6], vertical_alignment="center")
+
+    with left:
+        if st.button("‹", key=f"carousel_prev_{msg_key}",
                      disabled=offset == 0, use_container_width=True):
             offsets[msg_key] = max(0, offset - _CAROUSEL_WINDOW)
             st.rerun()
-    with nav_info:
-        start = offset + 1
-        end = min(offset + _CAROUSEL_WINDOW, total)
+
+    with mid:
+        cards = "".join(_product_card_html(it) for it in window)
         st.markdown(
-            f"<div style='text-align:center;padding-top:6px;'>{start}–{end} of {total}</div>",
+            f'<div style="display:flex;gap:12px;align-items:stretch;">{cards}</div>',
             unsafe_allow_html=True,
         )
-    with nav_next:
+
+    with right:
         at_end = offset + _CAROUSEL_WINDOW >= total
-        if st.button("Next ▶", key=f"carousel_next_{msg_key}",
+        if st.button("›", key=f"carousel_next_{msg_key}",
                      disabled=at_end, use_container_width=True):
             offsets[msg_key] = offset + _CAROUSEL_WINDOW
             st.rerun()
+
+    start = offset + 1
+    end = min(offset + _CAROUSEL_WINDOW, total)
+    st.markdown(
+        f"<div style='text-align:center;color:#9aa0b4;font-size:12px;margin-top:4px;'>"
+        f"{start}–{end} of {total}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_message(msg: dict, msg_key: int) -> None:
@@ -385,7 +559,7 @@ with st.sidebar:
 
     if uploaded_file is not None:
         try:
-            df = pd.read_csv(uploaded_file)
+            df = _ensure_product_type(pd.read_csv(uploaded_file))
             st.success("File uploaded successfully.")
         except Exception as e:
             st.error(f"Error reading file: {e}")

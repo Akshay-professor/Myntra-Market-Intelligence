@@ -9,6 +9,7 @@ small-model LLM call only for genuinely ambiguous queries. Returns one of:
 import re
 
 from agent import classify_intent_llm
+from taxonomy import PRODUCT_VOCAB as _TAXONOMY_VOCAB
 
 GREETING = "GREETING"
 PRODUCT_SEARCH = "PRODUCT_SEARCH"
@@ -36,6 +37,10 @@ def _is_greeting(text: str) -> bool:
     for phrase in _GREETING_PHRASES:
         if phrase in cleaned and len(cleaned) < 30:
             return True
+    # Short messages that start with a greeting word ("hey there", "hello!").
+    tokens = re.findall(r"[a-z']+", cleaned)
+    if tokens and tokens[0] in _GREETING_WORDS and len(tokens) <= 3:
+        return True
     return False
 
 
@@ -52,41 +57,25 @@ _ANALYTICAL_KEYWORDS = [
 ]
 
 
+_ANALYTICAL_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(kw) for kw in _ANALYTICAL_KEYWORDS) + r")\b"
+)
+
+
 def _is_analytical(text: str) -> bool:
-    return any(kw in text for kw in _ANALYTICAL_KEYWORDS)
+    # Word-boundary match so "discount" doesn't trip the "count" keyword, etc.
+    return bool(_ANALYTICAL_RE.search(text))
 
 
 # ---------------------------------------------------------------------------
 # Product-search detection
 # ---------------------------------------------------------------------------
 
-# Common Myntra product-type vocabulary. If any of these appears as a whole
-# word, the query is almost certainly a product search.
-PRODUCT_VOCAB = {
-    # topwear
-    "shirt", "shirts", "tshirt", "tshirts", "t-shirt", "t-shirts", "tee", "tees",
-    "top", "tops", "kurta", "kurtas", "kurti", "kurtis", "blouse", "tunic",
-    "sweatshirt", "sweater", "hoodie", "hoodies", "jacket", "jackets", "blazer",
-    "coat", "cardigan",
-    # bottomwear
-    "jeans", "jean", "trouser", "trousers", "pant", "pants", "shorts", "skirt",
-    "skirts", "leggings", "jeggings", "chinos", "joggers", "trackpants",
-    # dresses / ethnic
-    "dress", "dresses", "gown", "saree", "sarees", "lehenga", "salwar",
-    "dupatta", "suit", "suits",
-    # innerwear / swim
-    "bikini", "lingerie", "bra", "bras", "brief", "briefs", "underwear",
-    "panty", "panties", "swimwear", "nightwear", "boxer", "boxers", "vest",
-    # footwear
-    "shoes", "shoe", "sneakers", "sneaker", "heels", "sandals", "sandal",
-    "flats", "boots", "slippers", "flip-flops", "loafers",
-    # accessories
-    "watch", "watches", "bag", "bags", "handbag", "backpack", "wallet", "belt",
-    "sunglasses", "cap", "hat", "scarf", "socks", "jewellery", "jewelry",
-    "earrings", "necklace", "bracelet", "ring",
-    # beauty
-    "kajal", "lipstick", "mascara", "foundation", "perfume", "fragrance",
-    "moisturizer", "sunscreen", "shampoo", "serum", "lip", "nail",
+# Product-type vocabulary comes from the shared taxonomy so the classifier and
+# the search layer always agree on what counts as a product term. A few extra
+# generic terms are added that aren't specific product types.
+PRODUCT_VOCAB = set(_TAXONOMY_VOCAB) | {
+    "outfit", "apparel", "clothing", "wear", "accessory", "accessories",
 }
 
 # Shopping intent phrases.
