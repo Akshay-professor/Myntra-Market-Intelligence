@@ -105,12 +105,10 @@ def _has_product_signal(text: str) -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
-def classify_query(query: str) -> str:
-    """Return the intent of a user query.
+def rule_intent(query: str) -> str | None:
+    """Classify using deterministic rules only (no LLM).
 
-    Order matters: cheap deterministic rules first, then a small LLM call only
-    when the rules can't decide (this is what reliably catches off-topic
-    questions vs. uncommon product terms).
+    Returns an intent, or None when the rules can't decide.
     """
     if not query or not query.strip():
         return OUT_OF_SCOPE
@@ -127,6 +125,20 @@ def classify_query(query: str) -> str:
 
     if _has_product_signal(text):
         return PRODUCT_SEARCH
+
+    return None
+
+
+def classify_query(query: str) -> str:
+    """Return the intent of a user query.
+
+    Cheap deterministic rules first, then a small LLM call only when the rules
+    can't decide (this is what reliably catches off-topic questions vs. uncommon
+    product terms).
+    """
+    intent = rule_intent(query)
+    if intent is not None:
+        return intent
 
     # Ambiguous -> spend one cheap LLM call.
     return classify_intent_llm(query)

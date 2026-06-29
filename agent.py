@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 
 from langchain_classic.agents import AgentExecutor, Tool, create_react_agent
@@ -66,6 +67,114 @@ def classify_intent_llm(query: str) -> str:
     except Exception as exc:  # noqa: BLE001 - classification must never crash the app
         logger.warning("Intent classification failed, defaulting to OUT_OF_SCOPE: %s", exc)
         return "OUT_OF_SCOPE"
+
+
+# ---------------------------------------------------------------------------
+# Structured query understanding (LLM extracts search facts)
+# ---------------------------------------------------------------------------
+
+_VALID_UNDERSTAND_INTENTS = {"product_search", "analytics", "greeting", "out_of_scope"}
+
+# NOTE: built with a __QUERY__ sentinel (not str.format) because the prompt
+# contains literal JSON braces.
+_UNDERSTAND_PROMPT = """You convert a shopping query for a Myntra fashion & beauty store into structured JSON filters.
+
+Return ONLY a JSON object (no prose, no code fences) with these exact keys:
+- "intent": one of "product_search", "analytics", "greeting", "out_of_scope"
+- "item": the main product type as a singular noun (e.g. "jeans","shirt","cap","watch","lipstick"), or null
+- "color": a single color word, or null
+- "attributes": array of other descriptive words like fit/material/style/occasion (e.g. ["slim fit","cotton"]), or []
+- "brand": a brand name if explicitly mentioned, or null
+- "gender": one of "men","women","kids", or null
+- "min_price": number in rupees or null
+- "max_price": number in rupees or null
+- "min_discount": number percent or null
+
+Rules:
+- "intent" is "product_search" only when the user wants to find or buy a product.
+- Use "analytics" for catalog statistics (top brands, average price, rating distribution).
+- Use "out_of_scope" for anything not about shopping or Myntra data: general knowledge, nonsense like "running nose", or chit-chat that is not a greeting.
+- Budgets: "under 2000","budget 1500rs","below 999" -> max_price. "above 2000","over 1500" -> min_price.
+- Discounts: "above 50% off","60% discount" -> min_discount.
+
+Examples:
+Q: "black jeans under 2000" -> {"intent":"product_search","item":"jeans","color":"black","attributes":[],"brand":null,"gender":null,"min_price":null,"max_price":2000,"min_discount":null}
+Q: "men slim fit blue shirts above 50% off" -> {"intent":"product_search","item":"shirt","color":"blue","attributes":["slim fit"],"brand":null,"gender":"men","min_price":null,"max_price":null,"min_discount":50}
+Q: "i have budget of 1500rs, show me jeans within this range" -> {"intent":"product_search","item":"jeans","color":null,"attributes":[],"brand":null,"gender":null,"min_price":null,"max_price":1500,"min_discount":null}
+Q: "running nose" -> {"intent":"out_of_scope","item":null,"color":null,"attributes":[],"brand":null,"gender":null,"min_price":null,"max_price":null,"min_discount":null}
+Q: "top brands by discount" -> {"intent":"analytics","item":null,"color":null,"attributes":[],"brand":null,"gender":null,"min_price":null,"max_price":null,"min_discount":null}
+Q: "hi" -> {"intent":"greeting","item":null,"color":null,"attributes":[],"brand":null,"gender":null,"min_price":null,"max_price":null,"min_discount":null}
+
+Q: "__QUERY__" -> """
+
+
+def _coerce_number(value):
+    if value is None:
+        return None
+    try:
+        num = float(value)
+        return int(num) if num.is_integer() else num
+    except (ValueError, TypeError):
+        return None
+
+
+def _normalize_facts(data: dict) -> dict:
+    """Validate / clean the raw JSON returned by the LLM into a safe facts dict."""
+    if not isinstance(data, dict):
+        return {"intent": "out_of_scope"}
+
+    intent = str(data.get("intent", "")).lower().strip()
+    if intent not in _VALID_UNDERSTAND_INTENTS:
+        intent = "product_search" if data.get("item") else "out_of_scope"
+
+    def _clean_str(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s.lower() if s and s.lower() not in ("null", "none", "") else None
+
+    attributes = data.get("attributes") or []
+    if isinstance(attributes, str):
+        attributes = [attributes]
+    attributes = [str(a).strip().lower() for a in attributes if str(a).strip()]
+
+    gender = _clean_str(data.get("gender"))
+    if gender not in ("men", "women", "kids"):
+        gender = None
+
+    return {
+        "intent": intent,
+        "item": _clean_str(data.get("item")),
+        "color": _clean_str(data.get("color")),
+        "attributes": attributes,
+        "brand": _clean_str(data.get("brand")),
+        "gender": gender,
+        "min_price": _coerce_number(data.get("min_price")),
+        "max_price": _coerce_number(data.get("max_price")),
+        "min_discount": _coerce_number(data.get("min_discount")),
+    }
+
+
+def understand_query(query: str) -> dict | None:
+    """Use a cheap LLM to parse a query into structured search facts.
+
+    Returns a normalized facts dict, or None if the LLM is unavailable / fails
+    (so the caller can fall back to rule-based parsing).
+    """
+    if not os.getenv("GROQ_API_KEY"):
+        return None
+    try:
+        llm = ChatGroq(model_name=CLASSIFIER_MODEL, temperature=0, max_tokens=220)
+        prompt = _UNDERSTAND_PROMPT.replace("__QUERY__", query.replace('"', "'"))
+        raw = llm.invoke(prompt)
+        text = getattr(raw, "content", "") or ""
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        return _normalize_facts(json.loads(text[start:end + 1]))
+    except Exception as exc:  # noqa: BLE001 - never crash the app on a parse error
+        logger.warning("Query understanding failed: %s", exc)
+        return None
 
 _AGENT_STOPPED_PHRASES = [
     "agent stopped due to iteration limit",

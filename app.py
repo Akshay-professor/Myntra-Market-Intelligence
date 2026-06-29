@@ -156,6 +156,7 @@ def prepare_rating_buckets(frame: pd.DataFrame) -> pd.DataFrame:
 # ---------- Intent Routing (classifier-driven) ----------
 
 import re
+import agent
 import data_tools
 import classifier
 import taxonomy
@@ -335,6 +336,12 @@ def _product_search_message(query: str, dataframe) -> dict:
     if min_price:
         header += f" above **₹{int(min_price)}**"
 
+    return {"role": "assistant", "kind": "products", "header": header,
+            "items": _results_to_items(results)}
+
+
+def _results_to_items(results) -> list[dict]:
+    """Convert a results DataFrame into the carousel's item dicts."""
     items = []
     for _, row in results.iterrows():
         img_url = row.get("image_url", "")
@@ -348,8 +355,67 @@ def _product_search_message(query: str, dataframe) -> dict:
             "img": str(img_url) if pd.notna(img_url) else "",
             "url": str(row.get("product_url", "#")),
         })
+    return items
 
-    return {"role": "assistant", "kind": "products", "header": header, "items": items}
+
+def _structured_product_message(dataframe, facts: dict, query: str) -> dict:
+    """Build a product carousel from LLM-extracted facts (primary search path)."""
+    item = facts.get("item")
+    color = facts.get("color")
+    attributes = facts.get("attributes") or []
+    brand = facts.get("brand")
+    gender = facts.get("gender")
+    min_price = facts.get("min_price")
+    max_price = facts.get("max_price")
+    min_discount = facts.get("min_discount")
+    sort_by_rating = bool(re.search(r'(best|top|highest|good)\s*rated|\brating\b', query.lower()))
+
+    results = data_tools.structured_search(
+        dataframe, item=item, color=color, attributes=attributes, brand=brand,
+        gender=gender, min_price=min_price, max_price=max_price,
+        min_discount=min_discount, sort_by_rating=sort_by_rating, limit=24,
+    )
+
+    # Semantic fallback if hard filters left nothing (typos / unusual phrasing).
+    if results.empty:
+        index = get_semantic_index(dataframe, (len(dataframe), tuple(dataframe.columns)))
+        sem_query = " ".join(p for p in [color, item, *attributes] if p) or query
+        positions = semantic_search.rank(index, sem_query, top_n=60)
+        if positions:
+            candidate = dataframe.iloc[positions]
+            if min_price is not None:
+                candidate = candidate[candidate["discounted_price"] >= min_price]
+            if max_price is not None:
+                candidate = candidate[candidate["discounted_price"] <= max_price]
+            if min_discount is not None and "discount_pct" in candidate.columns:
+                candidate = candidate[candidate["discount_pct"] >= min_discount]
+            results = candidate.head(24)
+
+    # Build a readable label from the facts.
+    label_bits = [b for b in [gender, color, *attributes, item] if b]
+    label = " ".join(label_bits) if label_bits else "products"
+
+    if results.empty:
+        msg = f"Sorry, I couldn't find any **{label}**"
+        if min_discount:
+            msg += f" with {int(min_discount)}%+ discount"
+        if max_price:
+            msg += f" under ₹{int(max_price)}"
+        if min_price:
+            msg += f" above ₹{int(min_price)}"
+        return {"role": "assistant", "content": msg + " in the catalog. Try a different search!"}
+
+    prefix = "Top-rated" if sort_by_rating else "Top"
+    header = f"{prefix} results for **{label}**"
+    if min_discount:
+        header += f" with **{int(min_discount)}%+ off**"
+    if max_price:
+        header += f" under **₹{int(max_price)}**"
+    if min_price:
+        header += f" above **₹{int(min_price)}**"
+
+    return {"role": "assistant", "kind": "products", "header": header,
+            "items": _results_to_items(results)}
 
 
 def build_chat_context(messages: list, current_query: str) -> str:
@@ -370,26 +436,49 @@ def build_chat_context(messages: list, current_query: str) -> str:
     )
 
 
-def get_smart_response(query: str, dataframe, messages: list) -> dict:
-    """Classify the query, then route to the matching handler.
-
-    Always returns a chat *message dict* (text or structured products) so the
-    render loop can draw it consistently.
-    """
-    intent = classifier.classify_query(query)
-
-    if intent == classifier.GREETING:
-        return {"role": "assistant", "content": _GREETING_RESPONSE}
-
-    if intent == classifier.OUT_OF_SCOPE:
-        return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
-
-    if intent == classifier.PRODUCT_SEARCH:
-        return _product_search_message(query, dataframe)
-
-    # ANALYTICS → LLM agent
+def _agent_message(query: str, dataframe, messages: list) -> dict:
     full_prompt = build_chat_context(messages, query)
     return {"role": "assistant", "content": get_agent_response(dataframe, full_prompt)}
+
+
+def get_smart_response(query: str, dataframe, messages: list) -> dict:
+    """Understand the query, then route to the matching handler.
+
+    Cheap rule fast-paths handle obvious greetings/analytics with no LLM. Anything
+    else goes through one LLM call (``understand_query``) that extracts structured
+    facts AND the intent, which drives an accurate structured product search. If the
+    LLM is unavailable, we fall back to the rule classifier + keyword search.
+
+    Always returns a chat *message dict* so the render loop can draw it consistently.
+    """
+    rule = classifier.rule_intent(query)
+    if rule == classifier.GREETING:
+        return {"role": "assistant", "content": _GREETING_RESPONSE}
+    if rule == classifier.ANALYTICS:
+        return _agent_message(query, dataframe, messages)
+
+    # Primary path: LLM understands the query (intent + search facts).
+    facts = agent.understand_query(query)
+
+    if facts is None:
+        # LLM unavailable / failed -> degrade to rules + keyword search.
+        fallback = rule if rule is not None else classifier.classify_query(query)
+        if fallback == classifier.PRODUCT_SEARCH:
+            return _product_search_message(query, dataframe)
+        if fallback == classifier.ANALYTICS:
+            return _agent_message(query, dataframe, messages)
+        if fallback == classifier.GREETING:
+            return {"role": "assistant", "content": _GREETING_RESPONSE}
+        return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
+
+    intent = facts.get("intent")
+    if intent == "greeting":
+        return {"role": "assistant", "content": _GREETING_RESPONSE}
+    if intent == "analytics":
+        return _agent_message(query, dataframe, messages)
+    if intent == "product_search":
+        return _structured_product_message(dataframe, facts, query)
+    return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
 
 
 # ---------- Product Carousel Renderer ----------

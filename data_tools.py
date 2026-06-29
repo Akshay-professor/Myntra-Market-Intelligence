@@ -160,6 +160,88 @@ def find_products(df: pd.DataFrame, keywords: list[str],
     return results.head(limit)
 
 
+def _name_matches(series: pd.Series, term: str) -> pd.Series:
+    """Word-start (\\bterm) match of a term against a lowercased text series."""
+    return series.str.contains(r"\b" + re.escape(term.lower()), na=False, regex=True)
+
+
+def structured_search(df: pd.DataFrame,
+                      item: str | None = None,
+                      color: str | None = None,
+                      attributes: list[str] | None = None,
+                      brand: str | None = None,
+                      gender: str | None = None,
+                      min_price: float | None = None,
+                      max_price: float | None = None,
+                      min_discount: float | None = None,
+                      sort_by_rating: bool = False,
+                      limit: int = 24) -> pd.DataFrame:
+    """Precise, fact-based product search.
+
+    HARD filters (define the candidate set): ``gender`` -> category, ``item`` ->
+    product_type, ``brand``, and the numeric price/discount filters.
+    SOFT signals (``color`` + ``attributes``): used to rank within candidates, and
+    to filter only when at least one candidate actually matches — so a request for
+    "brown caps" still shows caps even when no brown one exists (soft relaxation).
+    """
+    import taxonomy
+
+    res = df
+
+    # gender -> category (include Unisex so men/women queries keep neutral items).
+    if gender:
+        g = str(gender).lower()
+        if g in ("men", "women", "kids"):
+            res = res[res["category"].astype(str).str.lower().isin([g, "unisex"])]
+
+    # item -> product_type (accurate) with a name-contains fallback for unknowns.
+    if item:
+        canon = taxonomy.derive_product_type(str(item))
+        typed = res.iloc[0:0]
+        if "product_type" in res.columns and canon != "other":
+            typed = res[res["product_type"] == canon]
+        res = typed if not typed.empty else res[_name_matches(res["product_name"].astype(str).str.lower(), str(item))]
+
+    # brand (only if it actually narrows things).
+    if brand:
+        narrowed = res[res["brand"].astype(str).str.lower().str.contains(str(brand).lower(), na=False, regex=False)]
+        if not narrowed.empty:
+            res = narrowed
+
+    # numeric filters
+    if min_price is not None:
+        res = res[res["discounted_price"] >= min_price]
+    if max_price is not None:
+        res = res[res["discounted_price"] <= max_price]
+    if min_discount is not None and "discount_pct" in res.columns:
+        res = res[res["discount_pct"] >= min_discount]
+
+    # soft tokens: color + attribute words.
+    soft: list[str] = []
+    if color:
+        soft.append(str(color).lower())
+    for attr in (attributes or []):
+        soft.extend(t for t in str(attr).lower().split() if len(t) >= 2)
+
+    base_sort = ["rating", "num_reviews"] if sort_by_rating else ["num_reviews", "rating"]
+
+    if not res.empty and soft:
+        name_lower = res["product_name"].astype(str).str.lower()
+        score = sum(_name_matches(name_lower, t).astype(int) for t in soft)
+        res = res.assign(_score=score)
+        if (res["_score"] > 0).any():
+            res = res[res["_score"] > 0]
+        sort_cols = ["_score"] + base_sort
+        res = res.sort_values(by=[c for c in sort_cols if c in res.columns], ascending=False)
+        res = res.drop(columns=["_score"])
+    else:
+        avail = [c for c in base_sort if c in res.columns]
+        if avail:
+            res = res.sort_values(by=avail, ascending=[False] * len(avail))
+
+    return res.head(limit)
+
+
 def search_products(df: pd.DataFrame, query_input: str) -> str:
     """LLM-agent-compatible search: takes a string, returns markdown table.
     Format: 'keyword' OR 'keyword|max_price'
