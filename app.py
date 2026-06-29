@@ -1,4 +1,5 @@
 import os
+import base64
 import random
 import logging
 from pathlib import Path
@@ -18,50 +19,126 @@ LOCAL_FULL_DATA_FILE = BASE_DIR / "cleaned_myntra_data.csv"
 
 st.set_page_config(page_title="Myntra Market Intelligence", page_icon="🛍️", layout="wide")
 
+MYNTRA_PINK = "#ff3f6c"
+
 st.markdown(
     """
     <style>
-    footer {visibility: hidden;}
+    @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap');
 
-    div[data-testid="metric-container"] {
-        background-color: #1E1E1E;
-        border: 1px solid #333;
-        border-radius: 12px;
-        padding: 15px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+    html, body, .stApp, [data-testid="stAppViewContainer"], [class*="css"] {
+        font-family: 'Assistant','Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    }
+    .stApp, [data-testid="stAppViewContainer"] { background:#ffffff; }
+
+    /* hide Streamlit chrome */
+    #MainMenu {visibility:hidden;}
+    header[data-testid="stHeader"] { background:transparent; height:0; }
+    footer {visibility:hidden;}
+    [data-testid="stToolbar"] {display:none;}
+
+    .block-container { padding-top:0.6rem; padding-bottom:7rem; max-width:1280px; }
+
+    /* sidebar */
+    [data-testid="stSidebar"] { background:#fafafa; border-right:1px solid #f0f0f3; }
+    [data-testid="stSidebar"] * { color:#282c3f; }
+
+    /* buttons -> Myntra pink */
+    .stButton > button, .stDownloadButton > button {
+        background:#ff3f6c; color:#fff !important; border:none; border-radius:4px;
+        font-weight:700; letter-spacing:.3px;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover { background:#e22e5b; color:#fff !important; }
+
+    /* tabs */
+    [data-testid="stTabs"] button[role="tab"] { font-weight:700; color:#282c3f; }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { color:#ff3f6c; }
+    [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background:#ff3f6c; }
+
+    /* chat input -> Myntra search pill */
+    [data-testid="stChatInput"] textarea { background:#f5f5f6; color:#282c3f; }
+    [data-testid="stChatInput"] textarea::placeholder { color:#9b9ba5; }
+
+    /* chat messages: clean, not heavy bubbles */
+    .stChatMessage { background:transparent !important; border:none !important; padding:6px 0 !important; }
+    .stChatMessage p, .stChatMessage li, .stChatMessage span, .stChatMessage div { color:#282c3f; }
+    .stChatMessage a { color:#ff3f6c; }
+
+    /* metric cards */
+    [data-testid="stMetric"] {
+        background:#fff; border:1px solid #f0f0f3; border-radius:10px;
+        padding:14px; box-shadow:0 2px 8px rgba(0,0,0,.05);
     }
 
-    .stChatMessage[data-testid="stChatMessage"] {
-        border-radius: 15px;
-        padding: 10px;
-        margin-bottom: 10px;
+    /* ---- Myntra nav bar ---- */
+    .myntra-nav {
+        position:sticky; top:0; z-index:1000; background:#fff;
+        display:flex; align-items:center; gap:34px;
+        padding:8px 20px; border-bottom:1px solid #f0f0f3;
+        box-shadow:0 2px 6px rgba(0,0,0,.05); margin-bottom:14px;
     }
-    .stChatMessage[data-testid="stChatMessage"]:nth-child(odd) {
-        background-color: #0f172a !important;
-        border: 1px solid #1e293b;
+    .myntra-wordmark { font-weight:800; font-size:27px; color:#ff3f6c; font-style:italic; letter-spacing:-1px; }
+    .myntra-nav-logo img { height:44px; display:block; }
+    .myntra-nav-links { display:flex; gap:24px; }
+    .myntra-nav-links a {
+        color:#282c3f; text-decoration:none; font-weight:700; font-size:13px;
+        text-transform:uppercase; letter-spacing:.3px; padding:14px 0;
+        border-bottom:4px solid transparent;
     }
-    .stChatMessage[data-testid="stChatMessage"]:nth-child(even) {
-        background-color: #1f2937 !important;
-        border: 1px solid #374151;
+    .myntra-nav-links a:hover { color:#ff3f6c; border-bottom:4px solid #ff3f6c; }
+    .myntra-nav-spacer { flex:1; }
+    .myntra-nav-icons { display:flex; gap:26px; }
+    .myntra-nav-icons div {
+        display:flex; flex-direction:column; align-items:center;
+        font-size:11px; font-weight:700; color:#282c3f; cursor:pointer; line-height:1.3;
+    }
+    .myntra-nav-icons div span { font-size:17px; }
+
+    /* product grid */
+    .product-grid {
+        display:grid; grid-template-columns:repeat(auto-fill,minmax(185px,1fr));
+        gap:16px; margin-top:10px;
     }
 
-    .stChatMessage[data-testid="stChatMessage"] p,
-    .stChatMessage[data-testid="stChatMessage"] li,
-    .stChatMessage[data-testid="stChatMessage"] span,
-    .stChatMessage[data-testid="stChatMessage"] div,
-    .stChatMessage[data-testid="stChatMessage"] td,
-    .stChatMessage[data-testid="stChatMessage"] th,
-    .stChatMessage[data-testid="stChatMessage"] code {
-        color: #f8fafc !important;
-    }
-
-    .stChatMessage[data-testid="stChatMessage"] a {
-        color: #93c5fd !important;
-    }
+    /* shop hero */
+    .shop-hero { text-align:center; padding:26px 0 10px; }
+    .shop-hero h2 { color:#282c3f; margin:0; font-weight:800; font-size:26px; }
+    .shop-hero p { color:#7e818c; margin:6px 0 0; font-size:15px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+def _logo_html() -> str:
+    """Return the nav-bar logo: an image from assets/ if present, else a wordmark."""
+    for ext in ("png", "svg", "jpg", "jpeg", "webp"):
+        path = BASE_DIR / "assets" / f"myntra_logo.{ext}"
+        if path.exists():
+            data = base64.b64encode(path.read_bytes()).decode()
+            mime = "svg+xml" if ext == "svg" else ext
+            return f'<span class="myntra-nav-logo"><img src="data:image/{mime};base64,{data}"/></span>'
+    return '<span class="myntra-wordmark">Myntra</span>'
+
+
+def render_navbar() -> None:
+    """Render the sticky, Myntra-style top navigation bar."""
+    links = "".join(
+        f'<a href="#">{c}</a>'
+        for c in ["Men", "Women", "Kids", "Home &amp; Living", "Beauty", "Studio"]
+    )
+    icons = (
+        '<div><span>👤</span>Profile</div>'
+        '<div><span>❤️</span>Wishlist</div>'
+        '<div><span>🛍️</span>Bag</div>'
+    )
+    st.markdown(
+        f'<div class="myntra-nav">{_logo_html()}'
+        f'<div class="myntra-nav-links">{links}</div>'
+        f'<div class="myntra-nav-spacer"></div>'
+        f'<div class="myntra-nav-icons">{icons}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ---------- Data Loading (Cached) ----------
@@ -481,10 +558,9 @@ def get_smart_response(query: str, dataframe, messages: list) -> dict:
     return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
 
 
-# ---------- Product Carousel Renderer ----------
+# ---------- Product Card / Grid Renderer ----------
 
-_CAROUSEL_WINDOW = 3
-_MYNTRA_PINK = "#ff3f6c"
+_MYNTRA_PINK = MYNTRA_PINK
 
 
 def _fmt_price(value) -> str | None:
@@ -553,9 +629,9 @@ def _product_card_html(item: dict) -> str:
             )
 
     return (
-        '<div style="flex:1;min-width:0;background:#fff !important;border:1px solid #f0f0f3;'
-        'border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.08);overflow:hidden;'
-        'display:flex;flex-direction:column;">'
+        '<div style="width:100%;background:#fff !important;border:1px solid #f0f0f3;'
+        'border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.06);overflow:hidden;'
+        'display:flex;flex-direction:column;transition:box-shadow .2s;">'
         f'{image_block}'
         '<div style="padding:10px 12px 12px;display:flex;flex-direction:column;gap:4px;">'
         f'<div style="font-weight:700;color:#282c3f !important;font-size:14px;">{brand}</div>'
@@ -570,62 +646,35 @@ def _product_card_html(item: dict) -> str:
     )
 
 
-def render_product_carousel(msg: dict, msg_key: int) -> None:
-    """Render a horizontal, paginated carousel of Myntra-style product cards.
+_GRID_LIMIT = 12
 
-    Navigation arrows sit on the left and right sides of the row.
-    """
-    items = msg.get("items", [])
+
+def render_product_grid(msg: dict, msg_key: int) -> None:
+    """Render results as a responsive Myntra-style product grid."""
     header = msg.get("header", "")
     if header:
         st.markdown(header)
 
+    items = msg.get("items", [])
     if not items:
         return
 
-    offsets = st.session_state.setdefault("carousel_offsets", {})
-    offset = offsets.get(msg_key, 0)
-    total = len(items)
-    offset = max(0, min(offset, max(0, total - _CAROUSEL_WINDOW)))
+    display = items[:_GRID_LIMIT]
+    cards = "".join(_product_card_html(it) for it in display)
+    st.markdown(f'<div class="product-grid">{cards}</div>', unsafe_allow_html=True)
 
-    window = items[offset:offset + _CAROUSEL_WINDOW]
-
-    # Layout: [◀]  [ cards ]  [▶]
-    left, mid, right = st.columns([0.6, 11, 0.6], vertical_alignment="center")
-
-    with left:
-        if st.button("‹", key=f"carousel_prev_{msg_key}",
-                     disabled=offset == 0, use_container_width=True):
-            offsets[msg_key] = max(0, offset - _CAROUSEL_WINDOW)
-            st.rerun()
-
-    with mid:
-        cards = "".join(_product_card_html(it) for it in window)
+    if len(items) > len(display):
         st.markdown(
-            f'<div style="display:flex;gap:12px;align-items:stretch;">{cards}</div>',
+            f"<div style='color:#9aa0b4;font-size:12px;margin-top:8px;'>"
+            f"Showing top {len(display)} of {len(items)} matches</div>",
             unsafe_allow_html=True,
         )
-
-    with right:
-        at_end = offset + _CAROUSEL_WINDOW >= total
-        if st.button("›", key=f"carousel_next_{msg_key}",
-                     disabled=at_end, use_container_width=True):
-            offsets[msg_key] = offset + _CAROUSEL_WINDOW
-            st.rerun()
-
-    start = offset + 1
-    end = min(offset + _CAROUSEL_WINDOW, total)
-    st.markdown(
-        f"<div style='text-align:center;color:#9aa0b4;font-size:12px;margin-top:4px;'>"
-        f"{start}–{end} of {total}</div>",
-        unsafe_allow_html=True,
-    )
 
 
 def render_message(msg: dict, msg_key: int) -> None:
     """Dispatch a stored chat message to the correct renderer."""
     if msg.get("kind") == "products":
-        render_product_carousel(msg, msg_key)
+        render_product_grid(msg, msg_key)
     else:
         st.markdown(msg.get("content", ""))
 
@@ -641,8 +690,9 @@ if "carousel_offsets" not in st.session_state:
 # ---------- Sidebar ----------
 
 with st.sidebar:
-    st.title("🛍️ Myntra Market Intelligence")
-    st.write("Upload a dataset or use generated sample data.")
+    st.markdown("### 🛍️ Market Intelligence")
+    st.caption("Powered by Groq AI + LangChain")
+    st.write("Upload your own catalog or use the built-in dataset.")
 
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -667,21 +717,11 @@ with st.sidebar:
             st.info("Using generated sample dataset (50 rows).")
 
     if not df.empty:
-        st.markdown("### Dataset Stats")
-        c1, c2 = st.columns(2)
-        c1.metric("Total Products", f"{len(df):,}")
-        c2.metric("Brands", f"{df['brand'].nunique() if 'brand' in df.columns else 0:,}")
-
-        c3, c4 = st.columns(2)
-        c3.metric("Categories", f"{df['category'].nunique() if 'category' in df.columns else 0}")
-        avg_discount = df["discount_pct"].mean() if "discount_pct" in df.columns else 0
-        c4.metric("Avg Discount %", f"{avg_discount:.1f}%")
-
         with st.expander("Dataset Preview"):
-            st.dataframe(df.head(5), use_container_width=True)
+            st.dataframe(df.head(5), width="stretch")
 
     st.markdown("---")
-    if st.button("🗑️ Clear Chat History", use_container_width=True):
+    if st.button("🗑️ Clear Chat History", width="stretch"):
         st.session_state.messages = []
         st.session_state.carousel_offsets = {}
         st.rerun()
@@ -708,13 +748,12 @@ with st.sidebar:
             data=chat_export,
             file_name="myntra_ai_insights.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
         )
 
 # ---------- Main Content ----------
 
-st.header("Myntra Market Intelligence Agent")
-st.subheader("Powered by Groq AI + LangChain")
+render_navbar()
 
 if not os.getenv("GROQ_API_KEY"):
     st.error(
@@ -728,117 +767,109 @@ if not is_valid:
     st.warning(f"Dataset issue: {validation_msg}")
     st.stop()
 
-st.markdown("## Visual Insights")
-st.caption("These charts update automatically for either the uploaded CSV or the built-in sample dataset.")
-
-visual_tabs = st.tabs([
-    "Brand Performance",
-    "Category Pricing",
-    "Rating Insights",
-    "Discount Strategy",
-])
-
-with visual_tabs[0]:
-    st.markdown("### Brand Performance")
-    st.caption("The first chart shows the top 10 brands by average discount percentage. The second chart shows which brands have the largest product catalogs.")
-
-    brand_discount_df = (
-        df.groupby("brand", as_index=False)
-        .agg(avg_discount_pct=("discount_pct", "mean"), total_products=("product_id", "count"))
-        .round(2)
-    )
-
-    left_brand, right_brand = st.columns(2)
-    with left_brand:
-        st.markdown("**Top 10 Brands by Average Discount**")
-        st.bar_chart(
-            brand_discount_df.sort_values("avg_discount_pct", ascending=False).head(10),
-            x="brand",
-            y="avg_discount_pct",
-            use_container_width=True,
-        )
-    with right_brand:
-        st.markdown("**Top 10 Brands by Product Count**")
-        st.bar_chart(
-            brand_discount_df.sort_values("total_products", ascending=False).head(10),
-            x="brand",
-            y="total_products",
-            use_container_width=True,
-        )
-
-with visual_tabs[1]:
-    st.markdown("### Category Pricing")
-    st.caption("This chart compares average original price versus average discounted price by category.")
-
-    category_pricing_df = (
-        df.groupby("category", as_index=False)
-        .agg(
-            mean_original_price=("original_price", "mean"),
-            mean_discounted_price=("discounted_price", "mean"),
-        )
-        .round(2)
-    )
-    st.bar_chart(
-        category_pricing_df,
-        x="category",
-        y=["mean_original_price", "mean_discounted_price"],
-        use_container_width=True,
-    )
-
-with visual_tabs[2]:
-    st.markdown("### Rating Insights")
-    st.caption("Ratings are bucketed into business-friendly tiers so the distribution is easier to read.")
-
-    rating_distribution_df = prepare_rating_buckets(df)
-    st.bar_chart(
-        rating_distribution_df,
-        x="rating_bucket",
-        y="product_count",
-        use_container_width=True,
-    )
-
-with visual_tabs[3]:
-    st.markdown("### Discount Strategy")
-    st.caption("Each dot represents a product. The X-axis shows discount percentage, the Y-axis shows rating, and color separates categories.")
-
-    scatter_df = df[["discount_pct", "rating", "category"]].copy()
-    st.scatter_chart(
-        scatter_df,
-        x="discount_pct",
-        y="rating",
-        color="category",
-        use_container_width=True,
-    )
-
-# ---------- Quick Insight Buttons ----------
-
-st.markdown("**Quick Insights**")
-q1, q2, q3, q4 = st.columns(4)
-
 quick_query = None
-if q1.button("🏆 Top Brands", use_container_width=True):
-    quick_query = "What are the top 10 brands with the highest average discount?"
-if q2.button("💰 High Discounts", use_container_width=True):
-    quick_query = "Show me products with a discount greater than 60%."
-if q3.button("⭐ Best Rated", use_container_width=True):
-    quick_query = "What is the overall brand performance sorted by average rating?"
-if q4.button("📊 Category Summary", use_container_width=True):
-    quick_query = "Give me a summary of average price and discount for each category."
+shop_tab, insights_tab = st.tabs(["🛍️  Shop", "📊  Insights"])
 
-# ---------- Chat Display ----------
+# ===== SHOP TAB: search + chat + product grid =====
+with shop_tab:
+    if not st.session_state.messages:
+        st.markdown(
+            '<div class="shop-hero"><h2>What are you looking for?</h2>'
+            '<p>Search thousands of products or ask for market insights — powered by AI.</p></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("**Popular searches**")
+        s1, s2, s3, s4 = st.columns(4)
+        if s1.button("👖  Jeans under ₹1500", width="stretch"):
+            quick_query = "jeans under 1500"
+        if s2.button("👟  Running shoes", width="stretch"):
+            quick_query = "running shoes"
+        if s3.button("💄  Lipstick", width="stretch"):
+            quick_query = "lipstick"
+        if s4.button("🏆  Top brands by discount", width="stretch"):
+            quick_query = "What are the top 10 brands with the highest average discount?"
 
-for idx, message in enumerate(st.session_state.messages):
-    avatar = "🧑" if message["role"] == "user" else "🤖"
-    with st.chat_message(message["role"], avatar=avatar):
-        render_message(message, idx)
+    for idx, message in enumerate(st.session_state.messages):
+        avatar = "🧑" if message["role"] == "user" else "🛍️"
+        with st.chat_message(message["role"], avatar=avatar):
+            render_message(message, idx)
 
-# ---------- Chat Handlers ----------
+# ===== INSIGHTS TAB: stats + charts =====
+with insights_tab:
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Products", f"{len(df):,}")
+    m2.metric("Brands", f"{df['brand'].nunique() if 'brand' in df.columns else 0:,}")
+    m3.metric("Categories", f"{df['category'].nunique() if 'category' in df.columns else 0}")
+    m4.metric("Avg Discount %", f"{df['discount_pct'].mean() if 'discount_pct' in df.columns else 0:.1f}%")
 
-typed_query = st.chat_input("Ask anything about Myntra data...")
+    st.markdown("###")
+    if st.button("🏆 Ask AI: top brands by discount"):
+        quick_query = "What are the top 10 brands with the highest average discount?"
+
+    visual_tabs = st.tabs([
+        "Brand Performance",
+        "Category Pricing",
+        "Rating Insights",
+        "Discount Strategy",
+    ])
+
+    with visual_tabs[0]:
+        st.caption("Top 10 brands by average discount, and the brands with the largest catalogs.")
+        brand_discount_df = (
+            df.groupby("brand", as_index=False)
+            .agg(avg_discount_pct=("discount_pct", "mean"), total_products=("product_id", "count"))
+            .round(2)
+        )
+        left_brand, right_brand = st.columns(2)
+        with left_brand:
+            st.markdown("**Top 10 Brands by Average Discount**")
+            st.bar_chart(
+                brand_discount_df.sort_values("avg_discount_pct", ascending=False).head(10),
+                x="brand", y="avg_discount_pct", width="stretch", color=MYNTRA_PINK,
+            )
+        with right_brand:
+            st.markdown("**Top 10 Brands by Product Count**")
+            st.bar_chart(
+                brand_discount_df.sort_values("total_products", ascending=False).head(10),
+                x="brand", y="total_products", width="stretch", color=MYNTRA_PINK,
+            )
+
+    with visual_tabs[1]:
+        st.caption("Average original vs discounted price by category.")
+        category_pricing_df = (
+            df.groupby("category", as_index=False)
+            .agg(
+                mean_original_price=("original_price", "mean"),
+                mean_discounted_price=("discounted_price", "mean"),
+            )
+            .round(2)
+        )
+        st.bar_chart(
+            category_pricing_df, x="category",
+            y=["mean_original_price", "mean_discounted_price"], width="stretch",
+        )
+
+    with visual_tabs[2]:
+        st.caption("Product counts across rating tiers.")
+        st.bar_chart(
+            prepare_rating_buckets(df), x="rating_bucket", y="product_count",
+            width="stretch", color=MYNTRA_PINK,
+        )
+
+    with visual_tabs[3]:
+        st.caption("Each dot is a product: discount % vs rating, colored by category.")
+        st.scatter_chart(
+            df[["discount_pct", "rating", "category"]].copy(),
+            x="discount_pct", y="rating", color="category", width="stretch",
+        )
+
+# ---------- Chat Handler (global search bar) ----------
+
+typed_query = st.chat_input("Search for products, brands and more…")
 user_query = quick_query or typed_query
 
 if user_query:
-    with st.spinner("Agent is analyzing..."):
+    with st.spinner("Searching…"):
         try:
             # Pass prior history (without the current turn) for LLM context.
             response = get_smart_response(user_query, df, st.session_state.messages)
