@@ -15,6 +15,58 @@ FALLBACK_MODELS = [
     "gemma2-9b-it",
 ]
 
+# Cheap, fast model used only for one-word intent classification.
+CLASSIFIER_MODEL = "llama-3.1-8b-instant"
+
+_VALID_INTENTS = {"PRODUCT_SEARCH", "ANALYTICS", "GREETING", "OUT_OF_SCOPE"}
+
+_CLASSIFIER_PROMPT = """You are the intent classifier for a Myntra shopping and \
+market-intelligence assistant. Read the user's message and reply with EXACTLY ONE word \
+naming the intent. No punctuation, no explanation.
+
+The only valid answers are:
+- PRODUCT_SEARCH : the user wants to find, browse, or shop for specific products \
+(e.g. "black jeans", "show me kurtas under 1500", "bikini", "running shoes").
+- ANALYTICS : the user wants data insights about the catalog \
+(e.g. "top brands by discount", "average price per category", "rating distribution").
+- GREETING : greetings or casual small talk (e.g. "hi", "how are you", "thanks").
+- OUT_OF_SCOPE : anything unrelated to shopping or Myntra data \
+(e.g. "who is india's pm", "tell me a joke", "what is 2+2", general knowledge).
+
+Examples:
+Message: "who is india's pm?" -> OUT_OF_SCOPE
+Message: "black jeans" -> PRODUCT_SEARCH
+Message: "top 10 brands by discount" -> ANALYTICS
+Message: "hello there" -> GREETING
+Message: "what's the weather today" -> OUT_OF_SCOPE
+
+Message: "{query}" -> """
+
+
+def classify_intent_llm(query: str) -> str:
+    """Classify an ambiguous query into one of the four intents using a cheap LLM.
+
+    Returns one of PRODUCT_SEARCH / ANALYTICS / GREETING / OUT_OF_SCOPE.
+    On any error (missing key, rate limit, parse failure) defaults to OUT_OF_SCOPE,
+    so we politely decline rather than dumping irrelevant products.
+    """
+    if not os.getenv("GROQ_API_KEY"):
+        return "OUT_OF_SCOPE"
+
+    try:
+        llm = ChatGroq(model_name=CLASSIFIER_MODEL, temperature=0, max_tokens=4)
+        raw = llm.invoke(_CLASSIFIER_PROMPT.format(query=query.replace('"', "'")))
+        text = (getattr(raw, "content", "") or "").strip().upper()
+
+        # Be defensive: pick the first valid label that appears in the response.
+        for label in _VALID_INTENTS:
+            if label in text:
+                return label
+        return "OUT_OF_SCOPE"
+    except Exception as exc:  # noqa: BLE001 - classification must never crash the app
+        logger.warning("Intent classification failed, defaulting to OUT_OF_SCOPE: %s", exc)
+        return "OUT_OF_SCOPE"
+
 _AGENT_STOPPED_PHRASES = [
     "agent stopped due to iteration limit",
     "agent stopped due to time limit",

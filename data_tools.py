@@ -82,42 +82,58 @@ def get_brand_performance(df: pd.DataFrame) -> str:
 def find_products(df: pd.DataFrame, keywords: list[str],
                   min_price: float | None = None,
                   max_price: float | None = None,
-                  limit: int = 10) -> pd.DataFrame:
+                  limit: int = 10,
+                  match_all: bool = True) -> pd.DataFrame:
     """Search products by matching keywords against product_name, brand, and category.
 
-    Each keyword is matched independently (OR logic across columns, AND across keywords
-    would be too restrictive, so we use OR across all keywords too — the more keywords
-    match, the more likely it appears at the top via review-count sorting).
+    With ``match_all=True`` (default), a product must contain EVERY meaningful keyword
+    (AND logic) in its combined name+brand+category text — so "black jeans" only returns
+    black jeans, not anything that merely contains "black". If that strict pass returns
+    nothing, it gracefully falls back to OR logic (any keyword) so rare or misspelled
+    queries still surface something.
 
     Returns a DataFrame of matching products, sorted by num_reviews descending.
     """
     if not keywords:
         return pd.DataFrame()
 
-    # Build a combined mask: product matches if ANY keyword hits ANY searchable column
-    mask = pd.Series(False, index=df.index)
-    for kw in keywords:
-        kw = kw.lower().strip()
-        if len(kw) < 2:
-            continue
-        name_hit = df["product_name"].str.lower().str.contains(kw, na=False, regex=False)
-        brand_hit = df["brand"].str.lower().str.contains(kw, na=False, regex=False)
-        category_hit = df["category"].str.lower().str.contains(kw, na=False, regex=False)
-        mask = mask | name_hit | brand_hit | category_hit
+    meaningful = [kw.lower().strip() for kw in keywords if len(kw.lower().strip()) >= 2]
+    if not meaningful:
+        return pd.DataFrame()
 
-    results = df[mask]
+    # One combined, lowercased searchable string per row.
+    combined = (
+        df["product_name"].astype(str) + " "
+        + df["brand"].astype(str) + " "
+        + df["category"].astype(str)
+    ).str.lower()
 
-    # Apply price filters
-    if min_price is not None:
-        results = results[results["discounted_price"] >= min_price]
-    if max_price is not None:
-        results = results[results["discounted_price"] <= max_price]
+    # Per-keyword hit masks against the combined text.
+    hits = [combined.str.contains(kw, na=False, regex=False) for kw in meaningful]
 
-    # Sort by popularity (num_reviews) then rating
-    if "num_reviews" in results.columns:
-        results = results.sort_values(
-            by=["num_reviews", "rating"], ascending=[False, False]
-        )
+    def _apply(mask: pd.Series) -> pd.DataFrame:
+        res = df[mask]
+        if min_price is not None:
+            res = res[res["discounted_price"] >= min_price]
+        if max_price is not None:
+            res = res[res["discounted_price"] <= max_price]
+        if "num_reviews" in res.columns:
+            res = res.sort_values(by=["num_reviews", "rating"], ascending=[False, False])
+        return res
+
+    # AND mask: every keyword must hit.
+    and_mask = hits[0].copy()
+    for h in hits[1:]:
+        and_mask = and_mask & h
+
+    results = _apply(and_mask) if match_all else pd.DataFrame()
+
+    # Graceful fallback to OR if the strict pass found nothing.
+    if results.empty:
+        or_mask = hits[0].copy()
+        for h in hits[1:]:
+            or_mask = or_mask | h
+        results = _apply(or_mask)
 
     return results.head(limit)
 

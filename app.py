@@ -144,20 +144,11 @@ def prepare_rating_buckets(frame: pd.DataFrame) -> pd.DataFrame:
     return bucket_counts
 
 
-# ---------- Greeting & Simple Query Handling (No LLM needed) ----------
+# ---------- Intent Routing (classifier-driven) ----------
 
-_GREETING_WORDS = {"hi", "hello", "hey", "hii", "hiii", "hola", "sup", "yo", "greetings"}
-_GREETING_PHRASES = {"how are you", "how r u", "what's up", "whats up", "good morning", "good evening", "good afternoon"}
-
-def _is_greeting(text: str) -> bool:
-    """Check if the user message is a simple greeting."""
-    cleaned = text.strip().lower().rstrip("?!.,")
-    if cleaned in _GREETING_WORDS:
-        return True
-    for phrase in _GREETING_PHRASES:
-        if phrase in cleaned and len(cleaned) < 30:
-            return True
-    return False
+import re
+import data_tools
+import classifier
 
 _GREETING_RESPONSE = (
     "Hey there! 👋 Welcome to the Myntra Market Intelligence Agent!\n\n"
@@ -169,121 +160,113 @@ _GREETING_RESPONSE = (
     "What would you like to explore?"
 )
 
-_ANALYTICAL_KEYWORDS = [
-    "top brands", "brand performance", "average", "summary", "compare",
-    "distribution", "category", "rating", "discount strategy", "most reviewed",
-    "highest", "lowest", "how many", "total", "count", "percentage",
-    "analytics", "analysis", "insight", "trend", "overall",
+_OUT_OF_SCOPE_RESPONSE = (
+    "I'm the **Myntra Market Intelligence** assistant, so I can only help with "
+    "shopping and Myntra catalog data — not general questions. 🙂\n\n"
+    "Try something like:\n"
+    "- 🔍 *'black jeans under ₹2000'*\n"
+    "- 📊 *'top brands by discount'*\n"
+    "- ⭐ *'most reviewed products'*\n"
+    "- 📈 *'category pricing summary'*"
+)
+
+# Filler phrases/words stripped from a product query to isolate the keywords.
+_FILLER_PHRASES = [
+    "show me", "find me", "i want to buy", "i want to purchase",
+    "i want", "i need", "search for", "looking for", "get me",
+    "up to", "less than", "more than",
+]
+_FILLER_WORDS = [
+    "show", "find", "buy", "purchase", "suggest", "recommend",
+    "under", "below", "within", "budget", "max", "upto",
+    "above", "over", "min", "minimum",
+    "expensive", "cheap", "cheaper", "affordable", "costly",
+    "please", "pls", "plz", "some", "any", "the",
+    "rs", "₹", "inr", "rupees", "rupee",
 ]
 
-def _is_analytical_query(text: str) -> bool:
-    """Check if query needs LLM-powered analytics."""
-    q = text.lower()
-    return any(kw in q for kw in _ANALYTICAL_KEYWORDS)
 
-
-def _try_direct_product_search(query: str, dataframe) -> str | None:
-    """Attempt to answer product queries directly without the LLM.
-    Returns a formatted response string, or None if the query needs the LLM.
-    """
-    import re
-    import data_tools
-    import pandas as pd
-
+def _extract_search_params(query: str):
+    """Parse a product query into (keywords, min_price, max_price, search_term)."""
     q = query.lower().strip()
 
-    # Skip analytical queries — those need the LLM
-    if _is_analytical_query(q):
-        return None
-
-    # Try to extract a max price
     max_price = None
     min_price = None
-    
-    price_match_max = re.search(
+
+    m = re.search(
         r'(?:under|below|within|budget|max|upto|up to|less than)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
     )
-    if price_match_max:
-        max_price = float(price_match_max.group(1))
-        
-    price_match_min = re.search(
+    if m:
+        max_price = float(m.group(1))
+
+    m = re.search(
         r'(?:above|over|more than|min|minimum)\s*(?:rs\.?|₹|inr)?\s*(\d+)', q
     )
-    if price_match_min:
-        min_price = float(price_match_min.group(1))
-
-    # Filler phrases to strip (multi-word first, then single words)
-    filler_phrases = [
-        "show me", "find me", "i want to buy", "i want to purchase",
-        "i want", "i need", "search for", "looking for", "get me",
-        "up to", "less than", "more than"
-    ]
-    filler_words = [
-        "show", "find", "buy", "purchase", "suggest", "recommend",
-        "under", "below", "within", "budget", "max", "upto",
-        "above", "over", "min", "minimum",
-        "please", "pls", "plz", "some", "any", "the",
-        "rs", "₹", "inr", "rupees", "rupee",
-    ]
+    if m:
+        min_price = float(m.group(1))
 
     search_term = q
-    # Strip multi-word fillers first (order matters)
-    for filler in filler_phrases:
+    for filler in _FILLER_PHRASES:
         search_term = search_term.replace(filler, " ")
-    # Strip single filler words using word boundaries
-    for word in filler_words:
+    for word in _FILLER_WORDS:
         search_term = re.sub(r'\b' + re.escape(word) + r'\b', ' ', search_term)
-    # Remove price numbers
-    search_term = re.sub(r'\d+', '', search_term).strip()
-    # Clean up extra spaces
+    search_term = re.sub(r'\d+', '', search_term)
     search_term = re.sub(r'\s+', ' ', search_term).strip()
 
-    if not search_term or len(search_term) < 2:
-        return None
-
-    # Search using the new robust data_tools.find_products
     keywords = search_term.split()
+    return keywords, min_price, max_price, search_term
+
+
+def _product_search_message(query: str, dataframe) -> dict:
+    """Run a product search and return a structured chat message.
+
+    Returns either a {"kind": "products", ...} message or a plain text message
+    (for the "no results" case).
+    """
+    keywords, min_price, max_price, search_term = _extract_search_params(query)
+
+    if not keywords:
+        return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
+
     results = data_tools.find_products(
-        dataframe, keywords, min_price=min_price, max_price=max_price, limit=10
+        dataframe, keywords, min_price=min_price, max_price=max_price, limit=24
     )
 
+    label = search_term or query.strip()
     if results.empty:
-        msg = f"Sorry, I couldn't find any **{search_term}** products"
-        if max_price: msg += f" under ₹{int(max_price)}"
-        if min_price: msg += f" above ₹{int(min_price)}"
-        return msg + " in the catalog. Try a different keyword!"
+        msg = f"Sorry, I couldn't find any **{label}** products"
+        if max_price:
+            msg += f" under ₹{int(max_price)}"
+        if min_price:
+            msg += f" above ₹{int(min_price)}"
+        return {"role": "assistant", "content": msg + " in the catalog. Try a different keyword!"}
 
-    # Format nicely with rich markdown instead of a raw table
-    header = f"Here are the top results for **{search_term}**"
-    if max_price: header += f" under **₹{int(max_price)}**"
-    if min_price: header += f" above **₹{int(min_price)}**"
-    header += ":\n\n"
-    
-    formatted_items = []
+    header = f"Here are the top results for **{label}**"
+    if max_price:
+        header += f" under **₹{int(max_price)}**"
+    if min_price:
+        header += f" above **₹{int(min_price)}**"
+
+    items = []
     for _, row in results.iterrows():
-        name = row.get('product_name', 'Product')
-        brand = row.get('brand', 'Unknown')
-        price = row.get('discounted_price', 'N/A')
-        discount = row.get('discount_pct', '0')
-        img_url = row.get('image_url', '')
-        prod_url = row.get('product_url', '#')
-        
-        item = f"**{brand} - {name}**\n\n"
-        if pd.notna(img_url) and str(img_url).strip() and str(img_url).strip() != '-':
-            item += f"![Product Image]({img_url})\n\n"
-        item += f"Price: ₹{price} | Discount: {discount}%\n\n"
-        item += f"[🔗 View on Myntra]({prod_url})\n\n"
-        item += "---\n"
-        
-        formatted_items.append(item)
+        img_url = row.get("image_url", "")
+        items.append({
+            "name": str(row.get("product_name", "Product")),
+            "brand": str(row.get("brand", "Unknown")),
+            "price": row.get("discounted_price", "N/A"),
+            "discount": row.get("discount_pct", 0),
+            "img": str(img_url) if pd.notna(img_url) else "",
+            "url": str(row.get("product_url", "#")),
+        })
 
-    return header + "\n".join(formatted_items)
+    return {"role": "assistant", "kind": "products", "header": header, "items": items}
 
 
 def build_chat_context(messages: list, current_query: str) -> str:
     """Build a compact context string from recent user messages only."""
     recent_user_msgs = [
-        m["content"][:120] for m in messages if m["role"] == "user"
+        m["content"][:120] for m in messages
+        if m["role"] == "user" and "content" in m
     ][-3:]
 
     if not recent_user_msgs:
@@ -297,28 +280,100 @@ def build_chat_context(messages: list, current_query: str) -> str:
     )
 
 
-def get_smart_response(query: str, dataframe, messages: list) -> str:
-    """Smart router: handles greetings and product searches locally,
-    only calls the LLM for complex analytical queries. Saves tokens.
+def get_smart_response(query: str, dataframe, messages: list) -> dict:
+    """Classify the query, then route to the matching handler.
+
+    Always returns a chat *message dict* (text or structured products) so the
+    render loop can draw it consistently.
     """
-    # 1. Handle greetings without calling the LLM
-    if _is_greeting(query):
-        return _GREETING_RESPONSE
+    intent = classifier.classify_query(query)
 
-    # 2. Try direct product search (no LLM needed for shopping queries)
-    direct_result = _try_direct_product_search(query, dataframe)
-    if direct_result is not None:
-        return direct_result
+    if intent == classifier.GREETING:
+        return {"role": "assistant", "content": _GREETING_RESPONSE}
 
-    # 3. Analytical or complex query → use the LLM agent
+    if intent == classifier.OUT_OF_SCOPE:
+        return {"role": "assistant", "content": _OUT_OF_SCOPE_RESPONSE}
+
+    if intent == classifier.PRODUCT_SEARCH:
+        return _product_search_message(query, dataframe)
+
+    # ANALYTICS → LLM agent
     full_prompt = build_chat_context(messages, query)
-    return get_agent_response(dataframe, full_prompt)
+    return {"role": "assistant", "content": get_agent_response(dataframe, full_prompt)}
+
+
+# ---------- Product Carousel Renderer ----------
+
+_CAROUSEL_WINDOW = 3
+
+
+def render_product_carousel(msg: dict, msg_key: int) -> None:
+    """Render a horizontal, paginated carousel of product cards for a message."""
+    items = msg.get("items", [])
+    header = msg.get("header", "")
+    if header:
+        st.markdown(header)
+
+    if not items:
+        return
+
+    offsets = st.session_state.setdefault("carousel_offsets", {})
+    offset = offsets.get(msg_key, 0)
+    total = len(items)
+    offset = max(0, min(offset, max(0, total - _CAROUSEL_WINDOW)))
+
+    window = items[offset:offset + _CAROUSEL_WINDOW]
+    cols = st.columns(_CAROUSEL_WINDOW)
+    for col, item in zip(cols, window):
+        with col:
+            img = item.get("img", "")
+            if img and img.strip() and img.strip() != "-":
+                st.image(img, use_container_width=True)
+            st.markdown(f"**{item.get('brand', '')}**")
+            st.caption(item.get("name", ""))
+            st.markdown(
+                f"₹{item.get('price', 'N/A')} &nbsp;·&nbsp; "
+                f"{item.get('discount', 0)}% off"
+            )
+            st.markdown(f"[🔗 View on Myntra]({item.get('url', '#')})")
+
+    # Navigation row: ◀  "x–y of N"  ▶
+    nav_prev, nav_info, nav_next = st.columns([1, 2, 1])
+    with nav_prev:
+        if st.button("◀ Prev", key=f"carousel_prev_{msg_key}",
+                     disabled=offset == 0, use_container_width=True):
+            offsets[msg_key] = max(0, offset - _CAROUSEL_WINDOW)
+            st.rerun()
+    with nav_info:
+        start = offset + 1
+        end = min(offset + _CAROUSEL_WINDOW, total)
+        st.markdown(
+            f"<div style='text-align:center;padding-top:6px;'>{start}–{end} of {total}</div>",
+            unsafe_allow_html=True,
+        )
+    with nav_next:
+        at_end = offset + _CAROUSEL_WINDOW >= total
+        if st.button("Next ▶", key=f"carousel_next_{msg_key}",
+                     disabled=at_end, use_container_width=True):
+            offsets[msg_key] = offset + _CAROUSEL_WINDOW
+            st.rerun()
+
+
+def render_message(msg: dict, msg_key: int) -> None:
+    """Dispatch a stored chat message to the correct renderer."""
+    if msg.get("kind") == "products":
+        render_product_carousel(msg, msg_key)
+    else:
+        st.markdown(msg.get("content", ""))
 
 
 # ---------- Session State ----------
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "carousel_offsets" not in st.session_state:
+    st.session_state.carousel_offsets = {}
 
 # ---------- Sidebar ----------
 
@@ -365,13 +420,25 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.carousel_offsets = {}
         st.rerun()
 
     if st.session_state.messages:
         chat_export = "Myntra AI Insights Report\n" + "=" * 30 + "\n\n"
         for msg in st.session_state.messages:
             role = "User Query" if msg["role"] == "user" else "AI Analyst"
-            chat_export += f"{role}:\n{msg['content']}\n{'-' * 30}\n"
+            if msg.get("kind") == "products":
+                lines = [msg.get("header", "Product results")]
+                for it in msg.get("items", []):
+                    lines.append(
+                        f"- {it.get('brand', '')} - {it.get('name', '')} | "
+                        f"₹{it.get('price', 'N/A')} | {it.get('discount', 0)}% off | "
+                        f"{it.get('url', '')}"
+                    )
+                body = "\n".join(lines)
+            else:
+                body = msg.get("content", "")
+            chat_export += f"{role}:\n{body}\n{'-' * 30}\n"
 
         st.download_button(
             label="📄 Download Insights Report",
@@ -497,40 +564,29 @@ if q4.button("📊 Category Summary", use_container_width=True):
 
 # ---------- Chat Display ----------
 
-for message in st.session_state.messages:
+for idx, message in enumerate(st.session_state.messages):
     avatar = "🧑" if message["role"] == "user" else "🤖"
     with st.chat_message(message["role"], avatar=avatar):
-        st.markdown(message["content"])
+        render_message(message, idx)
 
 # ---------- Chat Handlers ----------
 
-if quick_query:
-    with st.chat_message("user", avatar="🧑"):
-        st.markdown(quick_query)
+typed_query = st.chat_input("Ask anything about Myntra data...")
+user_query = quick_query or typed_query
 
-    with st.chat_message("assistant", avatar="🤖"):
-        with st.spinner("Agent is analyzing..."):
-            try:
-                response = get_smart_response(quick_query, df, st.session_state.messages)
-            except Exception as e:
-                logger.error("Quick query failed: %s", e)
-                response = "Something went wrong while processing your request. Please try again!"
-            st.markdown(response)
-            st.session_state.messages.append({"role": "user", "content": quick_query})
-            st.session_state.messages.append({"role": "assistant", "content": response})
+if user_query:
+    with st.spinner("Agent is analyzing..."):
+        try:
+            # Pass prior history (without the current turn) for LLM context.
+            response = get_smart_response(user_query, df, st.session_state.messages)
+        except Exception as e:
+            logger.error("Chat query failed: %s", e)
+            response = {
+                "role": "assistant",
+                "content": "Something went wrong while processing your request. Please try again!",
+            }
 
-if prompt := st.chat_input("Ask anything about Myntra data..."):
-    with st.chat_message("user", avatar="🧑"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant", avatar="🤖"):
-        with st.spinner("Agent is analyzing..."):
-            try:
-                response = get_smart_response(prompt, df, st.session_state.messages)
-            except Exception as e:
-                logger.error("Chat query failed: %s", e)
-                response = "Something went wrong while processing your request. Please try again!"
-            st.markdown(response)
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    st.session_state.messages.append(response)
+    st.rerun()
 
