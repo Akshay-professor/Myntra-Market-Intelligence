@@ -63,3 +63,22 @@ def test_price_filter(catalog):
 def test_min_discount_filter(catalog):
     res = data_tools.structured_search(catalog, item="cap", min_discount=45)
     assert all(d >= 45 for d in res["discount_pct"])
+
+
+def test_accessory_mentions_ranked_last():
+    rows = [
+        ("ELEVANTO Kids Bath Robe With Belt", "ELEVANTO", "Kids", 506, 61),
+        ("Levis Men Solid Belt", "Levis", "Men", 1699, 0),
+        ("Allen Solly Men Formal Leather Belt", "Allen Solly", "Men", 714, 45),
+    ]
+    df = pd.DataFrame(rows, columns=["product_name", "brand", "category",
+                                     "discounted_price", "discount_pct"])
+    df["rating"] = [4.1, 4.2, 4.3]
+    df["num_reviews"] = [500, 100, 200]   # robe has most reviews on purpose
+    df["original_price"] = df["discounted_price"] * 2
+    df["product_id"] = range(len(df))
+    df["product_type"] = df["product_name"].apply(taxonomy.derive_product_type)
+
+    names = list(data_tools.structured_search(df, item="belt")["product_name"])
+    # Despite the robe having the most reviews, it must rank last (accessory mention).
+    assert names[-1] == "ELEVANTO Kids Bath Robe With Belt"

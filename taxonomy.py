@@ -117,7 +117,9 @@ def _compile_patterns() -> list[tuple[str, re.Pattern]]:
     for ptype, kws in _TYPE_RULES:
         # Strip trailing spaces used in rules to force token boundaries.
         parts = [re.escape(kw.strip()) for kw in kws if kw.strip()]
-        pattern = re.compile(r"\b(?:" + "|".join(parts) + r")", re.IGNORECASE)
+        # Whole-word match (+ optional plural) so "cap" matches "cap"/"caps" but
+        # NOT "cappuccino"/"captain"/"capris".
+        pattern = re.compile(r"\b(?:" + "|".join(parts) + r")s?\b", re.IGNORECASE)
         compiled.append((ptype, pattern))
     return compiled
 
@@ -132,6 +134,18 @@ def derive_product_type(name: str) -> str:
         if pattern.search(text):
             return ptype
     return "other"
+
+
+def word_pattern(term: str) -> str:
+    """Whole-word, plural-tolerant regex for matching a search term in text.
+
+    Depluralizes the term so both "cap" and "caps" match "cap"/"caps", while a
+    trailing boundary keeps "cap" from matching "cappuccino"/"captain"/"capris".
+    """
+    t = term.lower().strip()
+    if len(t) > 3 and t.endswith("s"):
+        t = t[:-1]
+    return r"\b" + re.escape(t) + r"s?\b"
 
 
 def expand_synonyms(keywords: list[str]) -> list[str]:

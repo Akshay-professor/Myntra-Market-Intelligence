@@ -252,6 +252,14 @@ def get_semantic_index(_dataframe, signature):
     corpus = semantic_search.make_corpus(_dataframe)
     return semantic_search.build_index(corpus)
 
+
+@st.cache_data(show_spinner=False)
+def get_brand_set(_dataframe, signature) -> set:
+    """Lowercased set of brand names in the active dataset (for brand detection)."""
+    if "brand" not in _dataframe.columns:
+        return set()
+    return set(_dataframe["brand"].dropna().astype(str).str.lower().str.strip())
+
 _GREETING_RESPONSE = (
     "Hey there! 👋 Welcome to the Myntra Market Intelligence Agent!\n\n"
     "I can help you with:\n"
@@ -436,7 +444,11 @@ def _results_to_items(results) -> list[dict]:
 
 
 def _structured_product_message(dataframe, facts: dict, query: str) -> dict:
-    """Build a product carousel from LLM-extracted facts (primary search path)."""
+    """Build a product grid from LLM-extracted facts (primary search path)."""
+    # A bare brand name ("roadster") -> show that brand's catalog, not a guessed item.
+    brand_set = get_brand_set(dataframe, (len(dataframe), tuple(dataframe.columns)))
+    facts = agent.apply_brand_override(facts, query, brand_set)
+
     item = facts.get("item")
     color = facts.get("color")
     attributes = facts.get("attributes") or []
@@ -468,28 +480,33 @@ def _structured_product_message(dataframe, facts: dict, query: str) -> dict:
                 candidate = candidate[candidate["discount_pct"] >= min_discount]
             results = candidate.head(24)
 
-    # Build a readable label from the facts.
-    label_bits = [b for b in [gender, color, *attributes, item] if b]
-    label = " ".join(label_bits) if label_bits else "products"
+    # Build a readable label from the facts (brand included).
+    label_bits = [b for b in [brand, gender, color, *attributes, item] if b]
+    label = " ".join(label_bits).title() if label_bits else "products"
+    generic = not label_bits and (min_price is not None or max_price is not None or min_discount is not None)
+
+    def _price_suffix(sep_disc=" with ", sep_max=" under ", sep_min=" above ", bold=False):
+        b = "**" if bold else ""
+        s = ""
+        if min_discount:
+            s += f"{sep_disc}{b}{int(min_discount)}%+ off{b}"
+        if max_price:
+            s += f"{sep_max}{b}₹{int(max_price)}{b}"
+        if min_price:
+            s += f"{sep_min}{b}₹{int(min_price)}{b}"
+        return s
 
     if results.empty:
-        msg = f"Sorry, I couldn't find any **{label}**"
-        if min_discount:
-            msg += f" with {int(min_discount)}%+ discount"
-        if max_price:
-            msg += f" under ₹{int(max_price)}"
-        if min_price:
-            msg += f" above ₹{int(min_price)}"
-        return {"role": "assistant", "content": msg + " in the catalog. Try a different search!"}
+        return {"role": "assistant",
+                "content": f"Sorry, I couldn't find any **{label}**" + _price_suffix()
+                + " in the catalog. Try a different search!"}
 
-    prefix = "Top-rated" if sort_by_rating else "Top"
-    header = f"{prefix} results for **{label}**"
-    if min_discount:
-        header += f" with **{int(min_discount)}%+ off**"
-    if max_price:
-        header += f" under **₹{int(max_price)}**"
-    if min_price:
-        header += f" above **₹{int(min_price)}**"
+    if generic:
+        header = ("Showing a budget selection" + _price_suffix(bold=True)
+                  + ".\n\n*Tip: add a type like 'jeans under 300' to narrow it down.*")
+    else:
+        prefix = "Top-rated" if sort_by_rating else "Top"
+        header = f"{prefix} results for **{label}**" + _price_suffix(bold=True)
 
     return {"role": "assistant", "kind": "products", "header": header,
             "items": _results_to_items(results)}

@@ -155,6 +155,20 @@ def _normalize_facts(data: dict) -> dict:
     }
 
 
+def apply_brand_override(facts: dict, query: str, brand_set: set) -> dict:
+    """If the entire query is a known brand name, force a brand search.
+
+    Catches cases where the LLM hallucinates an item for a bare brand query
+    (e.g. "roadster" -> item="watch"). Returns the facts unchanged otherwise.
+    """
+    if not facts or not brand_set:
+        return facts
+    q = (query or "").lower().strip()
+    if q in brand_set:
+        return {**facts, "intent": "product_search", "brand": q, "item": None}
+    return facts
+
+
 def understand_query(query: str) -> dict | None:
     """Use a cheap LLM to parse a query into structured search facts.
 

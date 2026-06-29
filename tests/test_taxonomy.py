@@ -29,6 +29,25 @@ def test_unknown_returns_other():
     assert taxonomy.derive_product_type("Mystery Gadget XYZ") == "other"
 
 
+def test_prefix_words_do_not_match_cap():
+    # The classic bug: "cap" must not match cappuccino / captain / capris.
+    assert taxonomy.derive_product_type("MCaffeine Cappuccino Body Wash") != "cap"
+    assert taxonomy.derive_product_type("DailyObjects Captain Star iPhone Case") != "cap"
+    assert taxonomy.derive_product_type("Black Panther Women Capris") != "cap"
+    # ...but real caps (singular & plural) still classify as cap.
+    assert taxonomy.derive_product_type("Roadster Unisex Printed Baseball Cap") == "cap"
+    assert taxonomy.derive_product_type("Kook N Keech Unisex Caps") == "cap"
+
+
+def test_word_pattern_whole_word():
+    import re
+    pat = taxonomy.word_pattern("cap")
+    assert re.search(pat, "baseball cap")
+    assert re.search(pat, "printed caps")
+    assert not re.search(pat, "cappuccino body wash")
+    assert not re.search(pat, "captain america")
+
+
 def test_expand_synonyms():
     assert taxonomy.expand_synonyms(["denim"]) == ["jeans"]
     assert taxonomy.expand_synonyms(["tee"]) == ["tshirt"]

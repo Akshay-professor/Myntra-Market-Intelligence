@@ -2,6 +2,8 @@ import re
 
 import pandas as pd
 
+import taxonomy
+
 
 def get_top_brands_by_discount(df: pd.DataFrame) -> str:
     """Returns top 10 brands with highest average discount %."""
@@ -137,9 +139,9 @@ def find_products(df: pd.DataFrame, keywords: list[str],
             return _apply(pd.Series(True, index=df.index)).head(limit)
         return pd.DataFrame()
 
-    # Per-keyword hit masks: keyword must appear at a word start.
+    # Per-keyword hit masks: whole-word, plural-tolerant match.
     hits = [
-        combined.str.contains(r"\b" + re.escape(kw), na=False, regex=True)
+        combined.str.contains(taxonomy.word_pattern(kw), na=False, regex=True)
         for kw in meaningful
     ]
 
@@ -161,8 +163,8 @@ def find_products(df: pd.DataFrame, keywords: list[str],
 
 
 def _name_matches(series: pd.Series, term: str) -> pd.Series:
-    """Word-start (\\bterm) match of a term against a lowercased text series."""
-    return series.str.contains(r"\b" + re.escape(term.lower()), na=False, regex=True)
+    """Whole-word, plural-tolerant match of a term against a lowercased text series."""
+    return series.str.contains(taxonomy.word_pattern(term), na=False, regex=True)
 
 
 def structured_search(df: pd.DataFrame,
@@ -183,9 +185,10 @@ def structured_search(df: pd.DataFrame,
     SOFT signals (``color`` + ``attributes``): used to rank within candidates, and
     to filter only when at least one candidate actually matches — so a request for
     "brown caps" still shows caps even when no brown one exists (soft relaxation).
-    """
-    import taxonomy
 
+    Within an item type, products that only mention the item as an accessory
+    ("Bath Robe With Belt") are ranked below genuine items ("Men Solid Belt").
+    """
     res = df
 
     # gender -> category (include Unisex so men/women queries keep neutral items).
@@ -224,21 +227,34 @@ def structured_search(df: pd.DataFrame,
         soft.extend(t for t in str(attr).lower().split() if len(t) >= 2)
 
     base_sort = ["rating", "num_reviews"] if sort_by_rating else ["num_reviews", "rating"]
+    sort_cols: list[str] = []
 
-    if not res.empty and soft:
+    if not res.empty:
         name_lower = res["product_name"].astype(str).str.lower()
-        score = sum(_name_matches(name_lower, t).astype(int) for t in soft)
-        res = res.assign(_score=score)
-        if (res["_score"] > 0).any():
-            res = res[res["_score"] > 0]
-        sort_cols = ["_score"] + base_sort
-        res = res.sort_values(by=[c for c in sort_cols if c in res.columns], ascending=False)
-        res = res.drop(columns=["_score"])
-    else:
-        avail = [c for c in base_sort if c in res.columns]
-        if avail:
-            res = res.sort_values(by=avail, ascending=[False] * len(avail))
 
+        # Accessory down-ranking: "... with <item>" (e.g. robe with belt) ranks last.
+        if item:
+            accessory = (
+                name_lower.str.contains(r"\bwith\b", na=False, regex=True)
+                & name_lower.str.contains(taxonomy.word_pattern(str(item)), na=False, regex=True)
+            )
+            res = res.assign(_primary=(~accessory).astype(int))
+            sort_cols.append("_primary")
+
+        # Soft-token relevance score (color/attributes).
+        if soft:
+            score = sum(_name_matches(name_lower, t).astype(int) for t in soft)
+            res = res.assign(_score=score)
+            if (res["_score"] > 0).any():
+                res = res[res["_score"] > 0]
+            sort_cols.append("_score")
+
+    sort_cols += base_sort
+    sort_cols = [c for c in sort_cols if c in res.columns]
+    if sort_cols and not res.empty:
+        res = res.sort_values(by=sort_cols, ascending=False)
+
+    res = res.drop(columns=[c for c in ("_primary", "_score") if c in res.columns])
     return res.head(limit)
 
 
