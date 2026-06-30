@@ -137,28 +137,11 @@ hallucinated.
 
 ---
 
-## 📊 Phase 1 — the BI foundation (Excel → Power BI)
+## 📊 Data analysis behind the app
 
-Before the AI layer, the raw Myntra data was cleaned and analysed the classic way.
-
-**Raw → preprocessed → cleaned**
-
-![Raw dataset](./Myntra_Project_Screenshots/RAW%20DATASET.png)
-![Preprocessed dataset](./Myntra_Project_Screenshots/PreProcessed%20dataset.png)
-![Cleaned data](./Myntra_Project_Screenshots/CLEANED%20DATA.png)
-
-**Pivot-table analysis**
-
-![Pivot table 1](./Myntra_Project_Screenshots/PIVOT%20TABLE%201.png)
-![Pivot table 2](./Myntra_Project_Screenshots/PIVOT%20TABLE%202.png)
-
-**Power BI dashboard & DAX measures**
-
-![Power BI dataset](./Myntra_Project_Screenshots/POWERBI%20DATASET.png)
-![Power BI dashboard](./Myntra_Project_Screenshots/POWERBI%20DASHBOARD.png)
-![SQL / DAX functions](./Myntra_Project_Screenshots/SQL%20DAX%20FN.png)
-
-### Key business findings
+The catalog was first explored the classic BI way (Excel cleaning → pivot analysis → Power BI
+dashboard with DAX measures) to understand the market before building the AI layer. The headline
+findings:
 
 | Metric | Value |
 |---|---|
@@ -167,6 +150,19 @@ Before the AI layer, the raw Myntra data was cleaned and analysed the classic wa
 | 💰 Discount sweet spot | **50–60%** band shows strongest conversion |
 | ⚠️ Concentration risk | Top 10 brands = **19.30%** of orders |
 | ⭐ Rating lift | Products rated **>4.0** sell **3.19×** more |
+
+These same questions are now answerable live inside the app — via the **Insights** tab and the
+LangChain analytics agent over pandas tools — so the analysis isn't a one-off report, it's built in.
+
+<details>
+<summary>📷 Power BI & data-prep screenshots</summary>
+
+![Power BI dashboard](./Myntra_Project_Screenshots/POWERBI%20DASHBOARD.png)
+![SQL / DAX functions](./Myntra_Project_Screenshots/SQL%20DAX%20FN.png)
+![Pivot table](./Myntra_Project_Screenshots/PIVOT%20TABLE%201.png)
+![Cleaned data](./Myntra_Project_Screenshots/CLEANED%20DATA.png)
+
+</details>
 
 ---
 
