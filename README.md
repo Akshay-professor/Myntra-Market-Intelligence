@@ -12,10 +12,7 @@ Myntra catalog. It combines a traditional BI foundation (Excel → Power BI) wit
 **Live Demo:** https://myntra-market-intelligence.streamlit.app/
 **GitHub:** [Akshay-professor](https://github.com/Akshay-professor) · **LinkedIn:** [akshay-poddar](https://www.linkedin.com/in/akshay-poddar-4299a5243/)
 
-<!-- 📸 SCREENSHOT — HERO (app home). Capture the new Myntra-style landing page: the pink sticky
-     nav bar (logo + MEN/WOMEN/KIDS…), the "What are you looking for?" hero, and the popular-search
-     chips. Save as: Myntra_Project_Screenshots/app-home.png -->
-![Myntra Market Intelligence — home](./Myntra_Project_Screenshots/app-home.png)
+![Myntra Market Intelligence — home](./assets/myntrahome.png)
 
 ---
 
@@ -41,27 +38,19 @@ Myntra catalog. It combines a traditional BI foundation (Excel → Power BI) wit
 ### 1. The Shopping Assistant (new Myntra-style UI)
 A redesigned, Myntra-styled UI with a sticky navigation bar, product grid, and conversational search.
 
-<!-- 📸 SCREENSHOT — SHOP TAB. Capture the "Shop" tab with a search done, e.g.
-     "men black slim jeans under 1500", showing the product grid of cards.
-     Save as: Myntra_Project_Screenshots/app-shopping.png -->
-![Shopping Assistant](./Myntra_Project_Screenshots/app-shopping.png)
+![Shopping Assistant](./assets/ShoppingAssistant.png)
 
 ### 2. Intelligent Structured Search
 The AI extracts constraints (budget, colour, item, brand, gender) and runs a precise, on-attribute
 search — *"black cap"* returns caps, not cappuccino or capris.
 
-<!-- 📸 SCREENSHOT — A precise result. Run "black cap" or "budget of 1500 show me jeans" and capture
-     the grid + the result header ("Top results for …").
-     Save as: Myntra_Project_Screenshots/Structured%20Search.png -->
-![Structured Search](./Myntra_Project_Screenshots/Structured%20Search.png)
+![Structured Search](./assets/Structured%20Search.png)
 
 ### 3. Visual Dashboard & Data Insights
 The **Insights** tab auto-generates charts for brand performance, category pricing, rating analysis
 and discount strategy.
 
-<!-- 📸 SCREENSHOT — INSIGHTS TAB of the running app: the 4 metric cards + a chart (e.g. Top Brands
-     by Average Discount). Save as: Myntra_Project_Screenshots/app-insights.png -->
-![Visual Insights](./Myntra_Project_Screenshots/app-insights.png)
+![Visual Insights](./assets/Visual%20Insights.png)
 
 ---
 
@@ -131,9 +120,6 @@ mostly-"Unisex" guess).
 For analytical questions (*"top brands by discount"*) a LangChain agent decides which pandas-based
 tools to run, observes the output, and synthesises the insight — grounded in computed numbers, not
 hallucinated.
-
-📖 **Deep dives:** [PROJECT.md](./PROJECT.md) (full architecture + roadmap) and
-[INTERVIEW_STUDY_GUIDE.md](./INTERVIEW_STUDY_GUIDE.md) (every design decision explained).
 
 ---
 
@@ -236,8 +222,6 @@ Myntra-Market-Intelligence-Agent/
 ├── preprocess_kaggle_data.py     # Data cleaning + enrichment pipeline
 ├── tests/                        # pytest suite (~66 tests)
 │
-├── PROJECT.md                    # Architecture deep-dive + roadmap
-├── INTERVIEW_STUDY_GUIDE.md      # Spoken-style design rationale
 ├── requirements.txt
 ├── Myntra_PowerBI_Dashboard.pbix # Phase 1 Power BI report
 ├── docs/data_dictionary.md
