@@ -82,3 +82,44 @@ def test_accessory_mentions_ranked_last():
     names = list(data_tools.structured_search(df, item="belt")["product_name"])
     # Despite the robe having the most reviews, it must rank last (accessory mention).
     assert names[-1] == "ELEVANTO Kids Bath Robe With Belt"
+
+
+@pytest.fixture
+def enriched():
+    """A catalog with the enriched columns (as produced by enrich_dataframe)."""
+    rows = [
+        # name, product_type, color, material, fit
+        ("Roadster Men Black Slim Cotton Jeans", "jean", "black", "cotton", "slim"),
+        ("Levis Men Blue Slim Cotton Jeans", "jean", "blue", "cotton", "slim"),
+        ("HERE&NOW Men Black Skinny Denim Jeans", "jean", "black", "denim", "skinny"),
+        ("Puma Men Black Sneakers", "sneaker", "black", "", ""),
+    ]
+    df = pd.DataFrame(rows, columns=["product_name", "product_type", "color", "material", "fit"])
+    df["brand"] = ["Roadster", "Levis", "HERE&NOW", "Puma"]
+    df["category"] = "Men"
+    df["discounted_price"] = [1199, 1499, 999, 2799]
+    df["discount_pct"] = [40, 30, 50, 35]
+    df["rating"] = [4.1, 4.0, 4.2, 4.5]
+    df["num_reviews"] = [500, 300, 400, 900]
+    df["original_price"] = df["discounted_price"] * 2
+    df["product_id"] = range(len(df))
+    return df
+
+
+def test_multi_attribute_and(enriched):
+    # "black slim cotton jeans" must match all three attribute columns.
+    res = data_tools.structured_search(
+        enriched, item="jeans", color="black", attributes=["slim", "cotton"])
+    assert list(res["product_name"]) == ["Roadster Men Black Slim Cotton Jeans"]
+
+
+def test_attribute_relaxation(enriched):
+    # No "red" jeans exist -> relax color, still return jeans (not empty).
+    res = data_tools.structured_search(enriched, item="jeans", color="red")
+    assert not res.empty
+    assert all(t == "jean" for t in res["product_type"])
+
+
+def test_color_filters_out_other_colors(enriched):
+    res = data_tools.structured_search(enriched, item="jeans", color="blue")
+    assert list(res["product_name"]) == ["Levis Men Blue Slim Cotton Jeans"]

@@ -144,12 +144,9 @@ def render_navbar() -> None:
 # ---------- Data Loading (Cached) ----------
 
 def _ensure_product_type(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add a derived `product_type` column if the dataset doesn't already have one."""
-    import taxonomy
-    if "product_type" not in frame.columns and "product_name" in frame.columns:
-        frame = frame.copy()
-        frame["product_type"] = frame["product_name"].apply(taxonomy.derive_product_type)
-    return frame
+    """Enrich the catalog with structured columns (type/gender/color/material/fit/pattern)."""
+    import enrich
+    return enrich.enrich_dataframe(frame)
 
 
 @st.cache_data

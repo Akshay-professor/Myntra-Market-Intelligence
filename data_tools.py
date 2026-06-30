@@ -178,17 +178,20 @@ def structured_search(df: pd.DataFrame,
                       min_discount: float | None = None,
                       sort_by_rating: bool = False,
                       limit: int = 24) -> pd.DataFrame:
-    """Precise, fact-based product search.
+    """Precise, fact-based product search over the enriched catalog.
 
     HARD filters (define the candidate set): ``gender`` -> category, ``item`` ->
-    product_type, ``brand``, and the numeric price/discount filters.
-    SOFT signals (``color`` + ``attributes``): used to rank within candidates, and
-    to filter only when at least one candidate actually matches — so a request for
-    "brown caps" still shows caps even when no brown one exists (soft relaxation).
+    product_type, ``brand``, numeric price/discount.
+    ATTRIBUTE filters (``color`` + ``attributes``): matched against the enriched
+    ``color/material/fit/pattern`` columns as AND, with graceful relaxation — if the
+    full AND is empty, the least-important attribute is dropped and retried, so
+    "brown caps" still returns caps when no brown one exists.
 
     Within an item type, products that only mention the item as an accessory
     ("Bath Robe With Belt") are ranked below genuine items ("Men Solid Belt").
     """
+    import enrich
+
     res = df
 
     # gender -> category (include Unisex so men/women queries keep neutral items).
@@ -197,13 +200,17 @@ def structured_search(df: pd.DataFrame,
         if g in ("men", "women", "kids"):
             res = res[res["category"].astype(str).str.lower().isin([g, "unisex"])]
 
-    # item -> product_type (accurate) with a name-contains fallback for unknowns.
+    # item -> product_type (URL-derived) with a product_name fallback.
     if item:
-        canon = taxonomy.derive_product_type(str(item))
-        typed = res.iloc[0:0]
-        if "product_type" in res.columns and canon != "other":
-            typed = res[res["product_type"] == canon]
-        res = typed if not typed.empty else res[_name_matches(res["product_name"].astype(str).str.lower(), str(item))]
+        terms = taxonomy.expand_synonyms(str(item).lower().split())
+        name_lower = res["product_name"].astype(str).str.lower()
+        item_mask = pd.Series(False, index=res.index)
+        for term in terms:
+            pat = taxonomy.word_pattern(term)
+            if "product_type" in res.columns:
+                item_mask = item_mask | res["product_type"].astype(str).str.contains(pat, na=False, regex=True)
+            item_mask = item_mask | name_lower.str.contains(pat, na=False, regex=True)
+        res = res[item_mask]
 
     # brand (only if it actually narrows things).
     if brand:
@@ -219,12 +226,40 @@ def structured_search(df: pd.DataFrame,
     if min_discount is not None and "discount_pct" in res.columns:
         res = res[res["discount_pct"] >= min_discount]
 
-    # soft tokens: color + attribute words.
-    soft: list[str] = []
-    if color:
-        soft.append(str(color).lower())
-    for attr in (attributes or []):
-        soft.extend(t for t in str(attr).lower().split() if len(t) >= 2)
+    # Bucket color + attribute tokens into (column, value) filters; the rest are
+    # free tokens scored against the product name.
+    attr_filters: list[tuple[str, str]] = []
+    free_tokens: list[str] = []
+    raw_tokens = ([str(color)] if color else []) + [
+        w for a in (attributes or []) for w in str(a).lower().split()
+    ]
+    for tok in raw_tokens:
+        tok = tok.lower().strip()
+        if len(tok) < 2:
+            continue
+        col = enrich.attribute_column(tok)
+        if col and col in res.columns:
+            if (col, tok) not in attr_filters:
+                attr_filters.append((col, tok))
+        else:
+            free_tokens.append(tok)
+
+    def _col_mask(frame, col, val):
+        return frame[col].astype(str).str.contains(taxonomy.word_pattern(val), na=False, regex=True)
+
+    # Apply attribute filters as AND with relaxation (drop least-important first).
+    _priority = {"color": 0, "fit": 1, "material": 2, "pattern": 3}
+    active = sorted(attr_filters, key=lambda cv: _priority.get(cv[0], 9))
+    if active and not res.empty:
+        applied = active[:]
+        while applied:
+            mask = pd.Series(True, index=res.index)
+            for col, val in applied:
+                mask &= _col_mask(res, col, val)
+            if mask.any():
+                res = res[mask]
+                break
+            applied.pop()  # relax the least-important attribute
 
     base_sort = ["rating", "num_reviews"] if sort_by_rating else ["num_reviews", "rating"]
     sort_cols: list[str] = []
@@ -241,12 +276,14 @@ def structured_search(df: pd.DataFrame,
             res = res.assign(_primary=(~accessory).astype(int))
             sort_cols.append("_primary")
 
-        # Soft-token relevance score (color/attributes).
-        if soft:
-            score = sum(_name_matches(name_lower, t).astype(int) for t in soft)
+        # Relevance score: matched attribute columns + free-token name hits.
+        if active or free_tokens:
+            score = pd.Series(0, index=res.index)
+            for col, val in active:
+                score = score + _col_mask(res, col, val).astype(int)
+            for tok in free_tokens:
+                score = score + _name_matches(name_lower, tok).astype(int)
             res = res.assign(_score=score)
-            if (res["_score"] > 0).any():
-                res = res[res["_score"] > 0]
             sort_cols.append("_score")
 
     sort_cols += base_sort

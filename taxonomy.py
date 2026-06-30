@@ -136,6 +136,21 @@ def derive_product_type(name: str) -> str:
     return "other"
 
 
+def singularize(word: str) -> str:
+    """Best-effort singularizer used to normalise product types ("tshirts"->"tshirt",
+    "watches"->"watch", "accessories"->"accessory"). Conservative on short words."""
+    w = word.lower().strip()
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies"):
+        return w[:-3] + "y"
+    if w.endswith(("ches", "shes", "sses", "xes", "zes")):
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
 def word_pattern(term: str) -> str:
     """Whole-word, plural-tolerant regex for matching a search term in text.
 
