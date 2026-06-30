@@ -1,398 +1,302 @@
-# Technical Interview Study Guide: Myntra Market Intelligence Agent
+# Interview Study Guide — Myntra Market Intelligence Agent
 
-This guide is designed for deep architecture interviews where you must defend design choices, explain trade-offs, and reason about production-grade evolution.
-
-## How to Use This Guide
-
-- Practice answering each question out loud in 2-4 minutes.
-- Use the answer outline as your minimum bar, then add your own examples.
-- Focus on precision: data flow, failure modes, state behavior, and scaling strategy.
-- For advanced questions, always discuss both current behavior and the next evolution step.
+This guide is written the way you should actually *speak* in the interview — full sentences,
+first person, plain English. Each answer below is roughly what you'd say out loud. Read them,
+then say them in your own words until they feel natural. Don't memorise word-for-word; understand
+the reasoning so you can defend it when the interviewer pushes back.
 
 ---
 
-## Level 1: Basic (Core Mechanics)
+## The 90-second pitch (say this when they ask "tell me about your project")
 
-### Q1) Walk me through one user query end-to-end in your system, from UI input to final answer rendering.
+"I built a conversational shopping and analytics app on top of a Myntra catalog of about a
+hundred thousand products. You can talk to it in plain English — either to shop, like *'black
+slim-fit jeans under 1500'*, or to ask business questions, like *'which brands give the highest
+discounts'*. It's built with Streamlit for the UI, Groq's LLMs for the language understanding, and
+pandas for the actual data work, and I styled the front end to look like the real Myntra site.
 
-**What the Interviewer is Looking For:** Whether you understand the full execution path and can explain architecture boundaries clearly.
+The interesting part isn't that it calls an LLM — anyone can do that. The interesting part is how
+I made the search *accurate*. Early on it behaved like a dumb keyword matcher: if you searched
+'black jeans' it would return black mascara, because 'black' appeared in the product name. So I
+reworked it into a pipeline that first *understands* the query, pulls out structured facts like
+item, colour, budget and gender, and then filters on real structured columns instead of doing
+fuzzy text matching. And to get those structured columns, I realised the product URL already
+contains Myntra's full product title — the category, the gender, the colour, the fabric — so I mine
+that to build the columns the raw data was missing. That one insight fixed most of the accuracy
+problems."
 
-**Ideal Senior-Level Answer Outline:**
-- Start with Streamlit chat input capture and session state append for the user message.
-- Explain call boundary into the agent layer through a single orchestration entry point.
-- Describe how the ReAct agent selects one of the predefined analytical tools over a shared DataFrame context.
-- Explain how tool output is transformed to a human-readable response and then rendered back in chat history.
-
-**Common Pitfall:** Only describing model inference and skipping UI state and tool invocation mechanics.
-
----
-
-### Q2) Why did you separate app, agent, and data tools into different modules instead of putting everything in one file?
-
-**What the Interviewer is Looking For:** Your reasoning on separation of concerns, testability, and maintainability.
-
-**Ideal Senior-Level Answer Outline:**
-- Define responsibilities: app handles presentation and interactions, agent handles reasoning and orchestration, tools handle deterministic analytics.
-- Explain reduced cognitive load and safer refactoring because each module has a narrow contract.
-- Highlight test strategy advantages: tools can be unit tested without LLM dependency, agent can be integration tested with mocks.
-- Mention extensibility: adding tools or replacing model provider does not require UI rewrites.
-
-**Common Pitfall:** Giving generic clean code answers without tying them to concrete module boundaries.
+That's your opener. Everything below is you defending the details.
 
 ---
 
-### Q3) What exactly does your ReAct setup buy you over directly prompting the model with the raw DataFrame?
+## Q1. Walk me through exactly what happens when a user types a query.
 
-**What the Interviewer is Looking For:** Whether you can articulate controlled agentic behavior versus ungrounded free-form generation.
+When the user types something in the chat box, the first thing I do is *not* call the LLM. I run a
+cheap rule-based check first, because most messages are obvious and I don't want to pay for a model
+call on every keystroke. If the message is a greeting like 'hi', I just return a canned welcome. If
+it clearly contains analytics words like 'top brands' or 'average discount', I send it to the
+analytics agent. Those two paths cost zero tokens.
 
-**Ideal Senior-Level Answer Outline:**
-- ReAct gives explicit action selection, so model decides when to call deterministic tools.
-- Tool outputs ground responses in computed analytics rather than hallucinated claims.
-- It enables auditable reasoning steps through Thought, Action, Observation cycles.
-- This pattern constrains capability surface by exposing only approved analytical operations.
+If the rules can't confidently decide — which is the case for most real shopping queries — then I
+make one call to a small, cheap model (Llama 3.1 8B on Groq) that does two jobs at once: it tells me
+the intent, and it extracts the query into a structured JSON object. So 'i have a budget of 1500,
+show me black jeans' comes back as something like `{intent: product_search, item: jeans, colour:
+black, max_price: 1500}`.
 
-**Common Pitfall:** Saying ReAct is just more accurate without explaining why grounding and constrained actions help.
+From there it branches. If it's a product search, I hand those facts to my structured search
+function, which filters the catalog and returns a grid of products. If it's an analytics question,
+I hand it to a LangChain agent that has a set of pandas functions as tools, and it computes the
+answer. If it's off-topic — someone asking 'who is the PM of India' — I politely decline and tell
+them what I can actually help with. The result gets stored in Streamlit's session state and
+rendered back into the chat, either as a product grid or as text.
 
----
-
-### Q4) How do you ensure incoming CSV data is valid before analysis starts?
-
-**What the Interviewer is Looking For:** Practical understanding of schema validation and early failure handling.
-
-**Ideal Senior-Level Answer Outline:**
-- Explain required column contract enforcement before any charting or agent calls.
-- Mention empty dataset checks and user-visible warning paths with early stop behavior.
-- Describe why fail-fast prevents downstream tool crashes and misleading analytics.
-- Call out extension path: add type checks, range checks, and null handling as next hardening step.
-
-**Common Pitfall:** Relying on try-catch only and not enforcing a schema contract.
+The thing I'd emphasise is that this is a *router*, not one big prompt. Cheap deterministic rules
+handle the easy cases, and I only spend an LLM call when there's genuine ambiguity.
 
 ---
 
-### Q5) How is chat history managed, and what state model are you using in Streamlit?
+## Q2. Your dataset only has eleven columns. How can you possibly filter by colour, fit, or gender?
 
-**What the Interviewer is Looking For:** Your understanding of framework state semantics and rerun behavior.
+This is the heart of the project, so let me be honest about the problem first. The raw data has
+product name, brand, a coarse category, prices, discount, rating, review count, an image URL and a
+product URL. Out of those, only price, discount, rating and brand are genuinely structured. The
+things people actually shop by — the item type, the colour, the fabric, the fit, the gender — all
+live inside the free-text product name. And the product name is often short and missing half of
+that. So you literally cannot filter on data that isn't there as a column.
 
-**Ideal Senior-Level Answer Outline:**
-- State is persisted in Streamlit session state under a messages collection.
-- On each rerun, prior messages are replayed to render consistent conversational context.
-- Clear chat is an explicit state reset action that triggers rerun for deterministic UX.
-- Mention export flow: state is serialized into a text report for audit or sharing.
+My first instinct was to parse the product name, but it's too sparse. Then I looked closely at the
+product URL and realised it's a goldmine. Every Myntra URL follows the pattern
+`myntra.com/{type}/{brand}/{a-long-descriptive-slug}/{id}/buy`. So the first part of the path is the
+*real* product type — Myntra's own category, like 'tshirts' or 'heels' or 'kurtas' — and the long
+slug is the full descriptive title with the gender, colour and fabric in it. For example a product
+whose name is just 'Printed Round Neck T-shirt' has a URL slug that says
+'fido-dido-men-black-printed-round-neck-t-shirt'. The name didn't tell me the gender or colour, but
+the URL did.
 
-**Common Pitfall:** Confusing browser memory with Streamlit server-side session state.
-
----
-
-### Q6) Why do your analytical tools return markdown tables as strings instead of DataFrames?
-
-**What the Interviewer is Looking For:** How you optimize for LLM usability and predictable output formatting.
-
-**Ideal Senior-Level Answer Outline:**
-- ReAct tools are designed around text observations; markdown is compact and model-friendly.
-- String outputs reduce serialization ambiguity versus passing object-heavy payloads.
-- This format keeps tool contracts uniform, easing prompt design and parser behavior.
-- Trade-off: lower machine-readability post-tool-call; future evolution can include dual structured plus textual output.
-
-**Common Pitfall:** Treating markdown as purely cosmetic rather than an interface contract choice.
-
----
-
-### Q7) How does your app behave when no file is uploaded?
-
-**What the Interviewer is Looking For:** Product resilience and fallback behavior clarity.
-
-**Ideal Senior-Level Answer Outline:**
-- App first tries loading a bundled sample CSV from a known path.
-- If missing, it generates synthetic sample data with required fields.
-- This guarantees a usable demo path and avoids a blank first-run experience.
-- Mention reproducibility concern: random generation should eventually be seeded for deterministic demos.
-
-**Common Pitfall:** Saying sample data is only for testing, ignoring its UX role in onboarding.
+So what I do is enrich the data once, offline: I parse the URL to get the product type and the rich
+slug, combine that with the product name, and extract structured columns — product_type, gender,
+colour, material, fit and pattern — using curated vocabularies and whole-word matching. After that,
+filtering becomes precise column matching instead of guessing on text. The honest part I always add:
+this is still bounded by what the title actually says. I measured it — colour is present for about
+58% of products. The other 42% genuinely don't state a colour anywhere, so I can't invent one.
+That's a data limitation, not a bug, and I think being upfront about that is the right engineering
+posture.
 
 ---
 
-### Q8) Why did you expose exactly six tools, and how did you choose their scope?
+## Q3. How do you decide what the user actually wants — the intent?
 
-**What the Interviewer is Looking For:** Intentional capability design and domain-driven API thinking.
+I use a hybrid, and the reason is cost. A pure LLM classifier would be accurate but I'd pay for a
+call on every single message, including 'hi' and 'thanks'. A pure rule-based classifier is free but
+brittle — it can't reliably tell 'running shoes' (a product) from 'running nose' (nonsense).
 
-**Ideal Senior-Level Answer Outline:**
-- Tool set maps directly to core retail questions: discount, category, reviews, rating distribution, and brand performance.
-- Each tool is coarse enough to be meaningful but narrow enough to stay deterministic.
-- Smaller curated tool surfaces reduce prompt confusion and incorrect tool selection.
-- Mention additive roadmap: new tools should be introduced from observed query logs, not speculation.
+So I layer them. First, deterministic rules catch the obvious cases for free: greetings from a small
+word list, analytics from a keyword list, and product searches when the query contains a known
+product-type word or a price pattern. Only when the rules genuinely can't decide do I fall back to
+the cheap model. That way the common cases are instant and free, and I spend tokens only on the hard,
+ambiguous ones — which, importantly, is exactly where off-topic questions live, so the model is what
+catches 'who is the PM of India' and lets me decline it.
 
-**Common Pitfall:** Adding many overlapping tools and then struggling with agent routing quality.
-
----
-
-## Level 2: Medium (Trade-offs and State)
-
-### Q9) You set max iterations and execution timeout in AgentExecutor. How did you pick those values, and what are the trade-offs?
-
-**What the Interviewer is Looking For:** Performance-latency-cost reasoning under constrained agent loops.
-
-**Ideal Senior-Level Answer Outline:**
-- Explain iteration cap as protection against tool-call loops and runaway reasoning.
-- Timeout protects user latency budgets and backend cost ceilings.
-- Higher values improve complex multi-step reasoning but increase response time and token cost.
-- Mention tuning method: evaluate query corpus, p95 latency, and success rate before adjustment.
-
-**Common Pitfall:** Choosing numbers arbitrarily without a measurable tuning framework.
+One bug worth mentioning here: my analytics keyword matching originally used plain substring search,
+and the word 'discount' contains 'count', which was in my analytics list — so 'above 70% discount'
+got misrouted to analytics. I fixed it by switching to whole-word matching with regex word
+boundaries. It's a small thing but it's a good example of the kind of subtle bug that separates a
+demo from something that actually works.
 
 ---
 
-### Q10) Why did you add model fallback logic, and how do you avoid silent quality regressions when fallback is triggered?
+## Q4. How do you turn a messy natural-language query into something you can search with?
 
-**What the Interviewer is Looking For:** Operational reliability and observability mindset.
+I let the model do the understanding, but I keep it on a very tight leash. I send the query to the
+small model with a strict instruction: return only a JSON object with a fixed set of fields — intent,
+item, colour, a list of other attributes, brand, gender, min price, max price, min discount. I give
+it a handful of examples in the prompt so it knows, for instance, that 'budget of 1500' means a
+maximum price and 'above 50% off' means a minimum discount.
 
-**Ideal Senior-Level Answer Outline:**
-- Primary model can become unavailable or decommissioned, so fallback preserves service continuity.
-- Fallback sequence should be explicit and deterministic to avoid random behavior.
-- Add telemetry markers for model used, fallback frequency, and user-visible impact.
-- Surface friendly messages and keep a configuration switch for preferred production model.
+Then I never trust the output blindly. I have a normaliser that validates and cleans whatever comes
+back — it lowercases things, coerces numbers, throws away invalid intents, and defaults safely. If
+the model returns garbage or the API is down, the whole thing returns nothing and I fall back to the
+old rule-based keyword path, so the app never crashes because of a bad model response.
 
-**Common Pitfall:** Treating fallback as purely technical failover and ignoring monitoring and quality drift.
-
----
-
-### Q11) Your tools close over a shared DataFrame. What are the concurrency and mutation risks of this pattern?
-
-**What the Interviewer is Looking For:** Awareness of shared-state hazards and defensive data handling.
-
-**Ideal Senior-Level Answer Outline:**
-- Shared read-only DataFrame is efficient but must remain immutable during request handling.
-- Any in-tool mutation could leak side effects across tool calls in a session.
-- Defensive approach: copy only when transformation is needed or enforce pure functions by contract.
-- At scale, session-scoped data isolation and explicit versioning prevent cross-user contamination.
-
-**Common Pitfall:** Assuming pandas operations are always non-mutating.
+I also added a specific guard for a failure I saw: if someone types just a brand name like
+'roadster', the model sometimes hallucinated an item like 'watch'. So I check the query against the
+actual set of brand names in the data, and if the whole query is a known brand, I force it into a
+brand search and drop whatever item the model guessed. That's a nice example of using the data itself
+to correct the model.
 
 ---
 
-### Q12) Why are some tool inputs ignored while one tool accepts a threshold parameter? Does that hurt consistency?
+## Q5. Once you have the facts, how does the search actually work?
 
-**What the Interviewer is Looking For:** API design consistency and agent ergonomics.
+I split the facts into two groups: hard filters and soft attributes. The hard filters define the set
+of candidates — gender maps to the category column, the item maps to the product_type column, brand
+is a match on the brand column, and price and discount are simple numeric comparisons. These are
+exact, so they're reliable.
 
-**Ideal Senior-Level Answer Outline:**
-- Most tools are aggregate summaries and naturally parameterless for common business questions.
-- Threshold tool is intentionally parameterized to support user-specific discount filtering.
-- To improve consistency, define formal input schemas for all tools, including optional defaults.
-- Mention long-term evolution toward structured function-calling style interfaces.
+The soft attributes — colour, fabric, fit, pattern — I apply as an AND on the enriched columns, but
+with what I call graceful relaxation. So 'black slim cotton jeans' filters to products that are
+black AND slim AND cotton AND jeans. But if that combination returns nothing — say there are no
+brown caps in stock — instead of showing an empty page, I drop the least important attribute and try
+again, until I get results. So the user always sees the closest thing, ranked by how many of their
+criteria actually matched. I picked that behaviour deliberately; for shopping, showing 'close
+matches' is better UX than a dead end.
 
-**Common Pitfall:** Leaving tool interfaces ad hoc and making prompt instructions carry too much burden.
-
----
-
-### Q13) How do you prevent hallucination if the model still writes narrative around tool outputs?
-
-**What the Interviewer is Looking For:** Grounded generation strategy and safety controls.
-
-**Ideal Senior-Level Answer Outline:**
-- Prompt policy enforces answering only from tool outputs and encourages explicit uncertainty when unavailable.
-- Deterministic temperature zero reduces creative drift in analytical contexts.
-- Constrained tool set narrows available evidence sources.
-- Next step: add response validators checking that key claims map to observed tool results.
-
-**Common Pitfall:** Claiming hallucinations are impossible because tools exist.
+There's also a relevance and ranking layer. I down-rank products that only mention the item as an
+accessory — for example a 'bath robe with belt' should not rank above an actual belt when you search
+'belts' — and then I sort by how many attributes matched and by popularity. And if the structured
+filters still come back empty, there's a semantic fallback that I'll explain next.
 
 ---
 
-### Q14) Explain your error handling philosophy across UI, agent, and tool layers.
+## Q6. Tell me about the hardest bug you fixed.
 
-**What the Interviewer is Looking For:** Layered fault isolation and graceful degradation strategy.
+The one I always tell is the 'black jeans returns mascara' bug, because it taught me the most. The
+original search did keyword matching with OR logic across the product name, brand and category. So
+'black jeans' matched anything containing 'black' *or* 'jeans' — which meant black mascara and black
+kajal showed up under a jeans search. The fix was two-fold: require all keywords to match, not any,
+and search on the structured product_type column instead of raw text.
 
-**Ideal Senior-Level Answer Outline:**
-- UI layer handles input and schema failures early with user-readable messages.
-- Tool layer wraps exceptions and returns contextual failure observations rather than crashing the agent.
-- Agent layer handles model/runtime exceptions and returns actionable remediation hints.
-- Emphasize degraded but responsive behavior over hard failures for interactive analytics.
+But fixing that exposed a subtler version of the same problem. I was matching with a leading word
+boundary, so 'cap' would still match anything *starting* with cap — cappuccino, captain, capris. So
+a search for 'caps' returned cappuccino body wash and a 'Captain America' phone case, because my
+enrichment had tagged those as product_type 'cap'. The real fix was whole-word matching on both
+sides — a leading and trailing boundary plus optional plural — so 'cap' matches 'cap' and 'caps' but
+not 'cappuccino'. I wrote that as one shared helper and used it everywhere, which also fixed 'men'
+matching 'women' and 'tshirt' matching 'sweatshirt'.
 
-**Common Pitfall:** One broad try-catch at top level that hides root cause and destroys debuggability.
-
----
-
-### Q15) Why use cached sample-data generation, and what are the reproducibility implications?
-
-**What the Interviewer is Looking For:** Understanding deterministic behavior, cache scope, and demo stability.
-
-**Ideal Senior-Level Answer Outline:**
-- Cache avoids unnecessary regeneration cost and stabilizes per-session experience.
-- Random synthetic generation without fixed seed can drift across environments.
-- For interview and production demos, seed control or static fixture data improves reproducibility.
-- Mention contract testing against known fixture outputs for stable tool verification.
-
-**Common Pitfall:** Assuming caching alone guarantees deterministic data.
+What I'd want the interviewer to take from that story is the method, not just the fix: I found these
+by actually testing the thing with real queries, I traced each one to a root cause in the matching
+logic, and I fixed the root cause once in a shared place rather than patching symptoms. And I wrote
+tests for each so they can't come back.
 
 ---
 
-### Q16) Your chart logic and tool logic overlap semantically. Why keep both instead of one source of truth?
+## Q7. What happens when there's no exact match, or the user makes a typo?
 
-**What the Interviewer is Looking For:** Product thinking on dual interaction modes and architectural boundaries.
+Two things. First, the relaxation I mentioned — if the attribute filters are too strict, I loosen
+them step by step rather than returning empty. Second, for typos and unusual phrasing, I have a
+semantic fallback built on TF-IDF over character n-grams. So if the structured search finds nothing
+for 'runing shooes', the fallback still ranks the running shoes highly because the character
+sequences overlap, even though the words are misspelled.
 
-**Ideal Senior-Level Answer Outline:**
-- Visual layer supports rapid exploratory sense-making before asking questions.
-- Tool layer supports precise conversational analytics and explanation generation.
-- Shared DataFrame ensures data consistency even when transformations differ by modality.
-- Future hardening: central analytics service functions reused by both charts and tools.
-
-**Common Pitfall:** Duplicating business formulas in multiple places without a reconciliation plan.
-
----
-
-## Level 3: Advanced (Scalability, Edge Cases and Optimization)
-
-### Q17) If this dataset grows from 50 rows to 50 million rows, what breaks first and how do you redesign it?
-
-**What the Interviewer is Looking For:** Ability to evolve prototype architecture into production data systems.
-
-**Ideal Senior-Level Answer Outline:**
-- In-memory pandas and per-request full scans become the first bottlenecks.
-- Move heavy aggregations to warehouse or OLAP engine with pre-aggregated materialized views.
-- Keep the agent layer but swap tools to query APIs or SQL endpoints with strict latency SLOs.
-- Add caching tiers and query-budget controls to protect costs and response times.
-
-**Common Pitfall:** Suggesting only bigger compute without changing data access architecture.
+I chose TF-IDF on character n-grams deliberately over heavier neural embeddings, and I can defend
+that choice: it's fast, it has no model download, it's deterministic so I can unit-test it, and it
+runs comfortably on a free hosting tier. It won't catch true synonyms — 'denim' versus 'jeans' — so
+for those I keep a small synonym map. I know the next step up is real sentence embeddings with a
+vector index, and I've scoped that as a follow-up phase, but I made a conscious cost-versus-accuracy
+trade-off for what's deployed today.
 
 ---
 
-### Q18) How would you make this multi-tenant and secure for enterprise use?
+## Q8. This calls LLMs. How do you keep cost and latency under control?
 
-**What the Interviewer is Looking For:** Security architecture maturity beyond a single-user demo.
+I treat the LLM as an expensive resource and route around it whenever I can. Greetings and obvious
+analytics queries are handled by rules and cost nothing. When I do need the model for understanding
+a product query, I use the small, cheap 8B model, not the big one — it's a couple of hundred tokens
+per query, which is fractions of a cent. I only bring out the large 70B model for the analytics
+agent, where the multi-step reasoning actually needs it.
 
-**Ideal Senior-Level Answer Outline:**
-- Introduce authentication and tenant-scoped authorization before tool execution.
-- Enforce row-level security in the data layer to prevent cross-tenant leakage.
-- Move secrets to managed secret stores and rotate keys with least-privilege policies.
-- Add audit logs for every query, tool action, and model response for compliance.
-
-**Common Pitfall:** Treating UI login as sufficient without data-layer tenancy controls.
-
----
-
-### Q19) ReAct traces can expose chain-of-thought. How do you balance debuggability with safety and privacy?
-
-**What the Interviewer is Looking For:** Responsible AI operations and secure observability design.
-
-**Ideal Senior-Level Answer Outline:**
-- Separate internal traces from user-visible responses; avoid exposing raw reasoning content to end users.
-- Keep structured action logs with minimal sensitive payloads for debugging.
-- Redact PII and enforce retention policies in observability pipelines.
-- Provide a secure debug mode gated by environment and role.
-
-**Common Pitfall:** Logging full prompts and outputs indiscriminately.
+So the expensive model runs on a minority of queries, and the rest are either free or nearly free.
+On top of that, the whole pipeline degrades gracefully: if the API is rate-limited or down, I have
+model fallbacks, and ultimately the app drops to rule-based keyword search so it still returns
+something instead of erroring. The principle is: spend tokens where they add accuracy, and nowhere
+else.
 
 ---
 
-### Q20) Your threshold parsing falls back to 50 on invalid input. Is that a good product and correctness decision?
+## Q9. How did you test a system that depends on a non-deterministic LLM?
 
-**What the Interviewer is Looking For:** Nuanced handling of user intent, ambiguity, and correctness guarantees.
+I drew a hard line between the deterministic parts and the model. Almost all of my logic — the
+enrichment, the whole-word matching, the structured filtering, the relaxation, the ranking, the
+brand correction, the intent rules — is pure functions that don't touch the network. I have about 66
+pytest tests covering those, with fixed inputs and exact expected outputs. For example, I assert that
+'cappuccino body wash' does not get tagged as a cap, that 'black slim cotton jeans' filters on all
+three attributes, and that a bath robe ranks below real belts.
 
-**Ideal Senior-Level Answer Outline:**
-- Silent fallback is user-friendly but can hide intent mismatch and produce misleading confidence.
-- Better pattern: return explicit clarification request when parse confidence is low.
-- Keep default behavior for omitted values but not malformed values.
-- Instrument invalid-input rate to guide UX improvements.
-
-**Common Pitfall:** Treating all invalid inputs as safe to auto-correct silently.
-
----
-
-### Q21) How would you benchmark and optimize end-to-end latency in this system?
-
-**What the Interviewer is Looking For:** Practical performance engineering across application and model boundaries.
-
-**Ideal Senior-Level Answer Outline:**
-- Define latency budget split: UI overhead, tool execution, model inference, serialization.
-- Capture p50, p95, and timeout rates per query type and per selected model.
-- Optimize by reducing tool calls, precomputing common aggregates, and improving prompt compactness.
-- Add adaptive routing: simple queries bypass agent loops and hit deterministic pipelines directly.
-
-**Common Pitfall:** Only measuring total wall time without stage-level breakdown.
+For the parts that do involve the LLM, I either test the pure helpers around it — like the JSON
+normaliser and the brand override, which I can test with hand-built inputs — or I stub the model out
+so the test is deterministic. I deliberately don't rely on asserting exact LLM output, because that's
+flaky. I also run Streamlit's app-test harness to confirm the whole UI renders without exceptions.
+The honest summary is: I made the system mostly deterministic *so that* it could be tested, and I
+think that design choice is as important as the tests themselves.
 
 ---
 
-### Q22) Suppose Groq API has intermittent failures and partial outages. How do you make user experience resilient?
+## Q10. What are the limitations? What would you not claim this does?
 
-**What the Interviewer is Looking For:** Reliability design under third-party dependency instability.
+I'm careful here because over-claiming is how you lose credibility. The biggest limitation is recall:
+I can only filter on attributes that the product title actually mentions. Colour is present on about
+58% of products, so a colour filter can't find the rest — not because my code is weak, but because
+the source data doesn't contain it. The second limitation is that there's no review *text* in the
+dataset, only review counts, so I can't honestly answer opinion questions like 'is this good for
+summer' from real customer feedback. Third, my attribute extraction is dictionary-based, so it can
+miss a rare colour or a misspelled fabric. And finally, each query is standalone — there's no
+multi-turn memory yet, so 'now show me cheaper ones' wouldn't refine the previous search.
 
-**Ideal Senior-Level Answer Outline:**
-- Use bounded retries with exponential backoff and jitter for transient failures.
-- Keep model fallback chain plus clear user messaging on degraded mode.
-- Implement circuit breaker behavior to avoid cascading failures during provider incidents.
-- Cache recent deterministic tool outputs for repeat queries where feasible.
-
-**Common Pitfall:** Unlimited retries that amplify outages and increase user wait time.
-
----
-
-### Q23) How would you test this architecture comprehensively, given both deterministic tools and non-deterministic model behavior?
-
-**What the Interviewer is Looking For:** Mature test strategy with layered confidence model.
-
-**Ideal Senior-Level Answer Outline:**
-- Unit test each data tool with fixed fixtures and exact expected outputs.
-- Contract test schema validation and UI state transitions.
-- Integration test agent orchestration with mocked model responses and tool-call assertions.
-- Add golden test suites for representative prompts, evaluated with semantic scoring thresholds.
-
-**Common Pitfall:** Relying only on manual chat testing.
+I list these because each one has a clear next step, and being able to name your own system's
+weaknesses is what makes the strengths believable.
 
 ---
 
-### Q24) If you had one quarter to productionize this, what roadmap would you prioritize and why?
+## Q11. If you had more time, how would you make it better?
 
-**What the Interviewer is Looking For:** Senior prioritization under time constraints and measurable impact.
+I have a concrete roadmap, and I sequenced it by dependency. The foundation — the enrichment and the
+accurate filtering — had to come first because everything else sits on top of clean structured data.
 
-**Ideal Senior-Level Answer Outline:**
-- Phase 1: reliability and security baseline, including auth, observability, and secret management.
-- Phase 2: data layer scaling and analytics service extraction to remove pandas bottlenecks.
-- Phase 3: quality controls, eval harness, and cost governance for sustained model performance.
-- Tie each phase to explicit success metrics: uptime, p95 latency, answer accuracy, and cost per 1k queries.
+After that, the first upgrade is real semantic search: sentence-transformer embeddings with a vector
+index like FAISS, which would handle true synonyms and intent, and optionally CLIP image embeddings
+on the product images so you could do visual 'find similar' search. The second upgrade is on the
+agent side: moving from the text-based ReAct agent to proper function calling, which is more
+reliable, and splitting it into specialist agents — a shopping agent, an analytics agent, a stylist
+agent that does 'complete the look', a deals agent — behind a router, plus an LLM re-ranker on the
+final results. The third is retrieval-augmented Q&A grounded in the catalog, a proper evaluation
+harness that uses an LLM as a judge to score search quality so I can catch regressions, and basic
+guardrails against prompt injection.
 
-**Common Pitfall:** Presenting feature wishlist instead of risk-first sequencing.
-
----
-
-## Rapid-Fire Drill Set (Use for Final Round Practice)
-
-1. Why is your tool surface intentionally narrow?
-2. Where can stale state appear, and how do you detect it?
-3. What is your blast radius if a tool function throws unexpectedly?
-4. How do you prove your answer is grounded in data, not model imagination?
-5. What would you delete first to reduce latency by 30 percent?
-6. What exact metric tells you fallback models are hurting answer quality?
-7. How do you keep chart insights and chat insights numerically consistent?
-8. Which part of your architecture is hardest to test and why?
+The point I'd make is that I'm not just listing buzzwords — each phase is testable on its own,
+depends on the previous one, and I've already been honest about the constraints, like the memory
+cost of holding embeddings for a hundred thousand products on a free tier.
 
 ---
 
-## Elite Terminology to Weave Into Answers
+## Q12. Why these tools — Streamlit, Groq, pandas? Wouldn't a real system look different?
 
-- Separation of concerns
-- Deterministic analytics layer
-- Grounded generation
-- Constrained tool invocation
-- Graceful degradation
-- Fail-fast validation
-- Session-scoped state
-- Latency budget
-- p95 and SLO
-- Circuit breaker and backoff
-- Observability and auditability
-- Multi-tenant isolation
-- Row-level security
-- Contract testing
-- Evaluation harness
+Yes, and I'd build it differently at scale — I'll come to that. For a project that has to be built,
+demoed and reasoned about, these were pragmatic choices. Streamlit lets me ship a real interactive
+UI in Python without a separate front-end stack, so I could spend my time on the actual logic. Groq
+gives very fast LLM inference with a generous free tier and access to good open models, which keeps
+the demo responsive and cheap. Pandas is the right tool for a hundred-thousand-row dataset that fits
+comfortably in memory.
+
+None of these are what I'd pick for production at massive scale, and I think saying that is a
+strength, not a weakness — it shows I chose tools that fit the problem in front of me rather than
+over-engineering.
 
 ---
 
-## Closing Interview Strategy
+## Q13. How would this scale from a hundred thousand rows to fifty million?
 
-When answering advanced questions, use this structure every time:
+The first thing that breaks is the in-memory pandas model — I can't hold fifty million rows in RAM
+and scan them on every query. So the data layer moves to a proper store: a columnar warehouse or a
+search engine like Elasticsearch for the structured filtering, and a vector database for the semantic
+side. My enrichment, which I currently do once at load, becomes a batch job in a pipeline that writes
+the structured columns back to the store.
 
-1. Current state: describe what the system does today.
-2. Risk: identify where it breaks under scale, failure, or ambiguity.
-3. Decision: explain the trade-off and why your choice is pragmatic.
-4. Evolution path: propose the next architecture step with a measurable metric.
+The good news is the *shape* of my architecture survives. The query-understanding layer that turns
+language into structured facts stays exactly the same — it doesn't care whether the facts are then
+run against pandas or against a SQL query or an Elasticsearch filter. So I'd swap the execution
+engine underneath the structured-search function and keep the rest. I'd also add caching for common
+queries and precompute popular aggregates for the analytics side. That's the answer that shows I
+understand the prototype is a prototype, but I designed the boundaries so it can grow.
 
-This framing makes your answers sound principal-level because you are not just describing implementation; you are demonstrating ownership of reliability, cost, correctness, and long-term maintainability.
+---
+
+## How to deliver this in the room
+
+Lead with the problem, not the tech. The strongest version of this whole story is: "search was
+returning mascara for 'black jeans', I figured out why, and I rebuilt it to understand the query and
+filter on structured data I mined from the product URL." That single narrative shows you can find
+problems, reason about root causes, work with messy real-world data, and make honest trade-offs —
+which is everything an intern interview is actually testing. Let the architecture details come out as
+the interviewer digs in, and never be afraid to say what your system *can't* do. The honesty is what
+makes the rest believable.
